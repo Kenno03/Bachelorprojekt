@@ -12,6 +12,18 @@
 #define INTERVAL 500000  // 0.5 seconds in microseconds
 #define STOP_TIME 2000000  // 2 seconds in microseconds
 #define MOVEMENT_THRESHOLD 0.005  // Minimum movement difference to consider stopping
+#define TARGET_DISTANCE 0.2  // Target distance in meters
+#define MAX_SPEED 0.5  // Maximum wheel speed
+#define SAMPLE_TIME 0.1 //Sample Time
+
+// PID gains
+float kp = 4.18792;
+float ki = 0.66314;
+float kd = 3.31572;
+
+// PID variables
+float integral = 0;
+float previous_error = 0;
 
 // Function to parse odometry data from XML
 void parse_odoPose(char *response, float *x, float *y, float *h) {
@@ -132,6 +144,63 @@ void wait_until_stopped(int odo_laser_fd) {
     printf("Robot has stopped moving.\n");
 }
 
+float read_laser_distance(int odo_laser_fd) {
+    char buffer[4096] = {0};
+
+    send(odo_laser_fd, "zoneobst\n", 9, 0);
+    usleep(INTERVAL);
+
+    int valread = read(odo_laser_fd, buffer, sizeof(buffer) - 1);
+    if (valread > 0) {
+        buffer[valread] = '\0';
+        printf("Laser Data Received: %s\n", buffer);  // Debugging output
+
+        float distances[9]; // Array to hold l0-l8 values
+        int matched = sscanf(buffer, "<laser l0=\"%f\" l1=\"%f\" l2=\"%f\" l3=\"%f\" l4=\"%f\" l5=\"%f\" l6=\"%f\" l7=\"%f\" l8=\"%f\"",
+                             &distances[0], &distances[1], &distances[2], &distances[3], &distances[4],
+                             &distances[5], &distances[6], &distances[7], &distances[8]);
+
+        if (matched == 9) {  // Ensure all values were extracted correctly
+            printf("Extracted Front Distance (l4): %.2f m\n", distances[4]); // l4 is front
+            return distances[4];
+        } else {
+            printf("Error: Could not extract front-facing distance from laser data.\n");
+        }
+    }
+    return -1; // Return -1 if reading failed
+}
+
+
+void pid_controller(int cmd_fd, float front_distance){
+
+    float error = front_distance - TARGET_DISTANCE;
+    integral += error *SAMPLE_TIME;
+    float derivative = (error - previous_error)/SAMPLE_TIME;
+
+    // Calculate speed correction
+    float correction = (kp * error) + (ki * integral) + (kd * derivative);
+
+      // Set a minimum movement threshold
+      float MIN_SPEED = 0.05;  // Adjust as needed
+      if (fabs(correction) < MIN_SPEED && fabs(error) > 0.01) {
+          correction = (correction > 0) ? MIN_SPEED : -MIN_SPEED;
+      }
+
+    // Ensure speed limits
+    if (correction > MAX_SPEED) correction = MAX_SPEED;
+    if (correction <= 0) correction = 0;
+
+    // Convert correction to differential drive
+    float vl = correction;
+    float vr = correction;
+
+    //Send command
+    char command[50];
+    snprintf(command, sizeof(command), "motorcmds %.2f %.2f\n", vl, vr);
+    send_command(cmd_fd, command);
+}
+
+
 // Main function
 int main() {
     int odo_laser_fd = setup_client(ODO_LASER_PORT);
@@ -148,23 +217,17 @@ int main() {
     printf("Zoneobst scan started\n");
     sleep(1);
 
-    // --- Drive in a Square Path ---
-    char* square_path_commands[] = {
-        "fwd 1\n",  // Move forward 1m
-        "turn 90\n", // Turn right 90 degrees
-        "fwd 1\n",
-        "turn 90\n",
-        "fwd 1\n",
-        "turn 90\n",
-        "fwd 1\n",
-        "turn 90\n"
-    };
-    int num_commands = sizeof(square_path_commands) / sizeof(square_path_commands[0]);
-
-    for (int i = 0; i < num_commands; i++) {
-        float x, y, h;
-        read_sensors(odo_laser_fd, &x, &y, &h);
-        send_command(cmd_fd, square_path_commands[i]);
+    // Control loop
+    while (1) {
+        float front_distance = read_laser_distance(odo_laser_fd);
+        if (front_distance > 0) {
+            printf("Front distance: %.2f m\n", front_distance);
+            pid_controller(cmd_fd, front_distance);
+        } else {
+            printf("Failed to read laser data, stopping robot.\n");
+            send_command(cmd_fd, "motorcmds 0 0\n");
+        }
+        usleep(INTERVAL);
     }
 
     wait_until_stopped(odo_laser_fd);
