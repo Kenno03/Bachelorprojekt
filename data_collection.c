@@ -74,9 +74,9 @@ int main() {
     send_command(cmd_fd, "var $start_time = $time\n");
     usleep(INTERVAL);  // Small delay to ensure execution
 
-    // Start odometry logging
+    // Start logging only odometry X position, velocity, and time
     printf("Starting odometry logging...\n");
-    send_command(cmd_fd, "log \"$odox\" \"$odoy\" \"$odoth\" \"$odovelocity\" \"$ododist\" \"$time - $start_time\"\n");
+    send_command(cmd_fd, "log \"$odox\" \"$odovelocity\" \"$time\"\n");
     sleep(1);  // Ensure logging has started
 
     // --- Step 2: Send Step Response Command ---
