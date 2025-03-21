@@ -12,16 +12,16 @@
 #define SERVER_IP "192.38.66.89"  // Replace with your server's IP
 #define LOG_DURATION 20  // Time in seconds to log data
 #define INTERVAL 100000  // 0.1 seconds in microseconds
-#define MAX_VELOCITY 0.5 // Max velocity
+#define MAX_VELOCITY 0.2 // Max velocity
 #define LOG_SIZE 2000  // Maximum log entries
 #define DESIRED_DISTANCE 0.2  // Desired distance
 
-float e[3] = {0, 0, 0};
-float u[3] = {0, 0, 0};
+float e[5] = {0, 0, 0, 0 ,0};
+float u[5] = {0, 0, 0, 0, 0};
 
 // Buffers to log control values
-float u_log[LOG_SIZE][3];
-float e_log[LOG_SIZE][3];
+float u_log[LOG_SIZE][5];
+float e_log[LOG_SIZE][5];
 int log_index = 0;
 
 // Function to set up a client connection
@@ -102,10 +102,15 @@ float read_laser_distance(int odo_laser_fd) {
 // Control function
 float control(float ref, float measurement) {
 
+    // Define coefficient arrays
+    double b[] = {0.3713, 0.9302, 0.6438, -0.0179, -0.1028}; // Numerator coefficients
+    double a[] = {1.0000, 1.2329, -0.1249, -0.3462, 0.0629};  // Denominator coefficients
+
     e[0] = measurement - ref ;
 
     // Corrected control equation
-    u[0] = (1.4111 * u[1]) - (0.5653 * u[2]) + (0.1743 * e[1]) + (0.1440 * e[2]);
+    u[0] = (1.2329 * u[1]) - (0.1249 * u[2]) - (0.3462 * u[3]) + (0.0629 * u[4]) 
+     + (0.3713 * e[0]) + (0.9302 * e[1]) + (0.6438 * e[2]) - (0.0179 * e[3]) - (0.1028 * e[4]);
 
     // Velocity clamping
     if (u[0] > MAX_VELOCITY) {
