@@ -105,7 +105,7 @@ float control(float ref, float measurement) {
     e[0] = measurement - ref ;
 
     // Corrected control equation
-    u[0] = (1.9433 * u[1]) - (0.9454 * u[2]) + (0.0010 * e[1]) + (0.0010 * e[2]);
+    u[0] = (1.4111 * u[1]) - (0.5653 * u[2]) + (0.1743 * e[1]) + (0.1440 * e[2]);
 
     // Velocity clamping
     if (u[0] > MAX_VELOCITY) {
