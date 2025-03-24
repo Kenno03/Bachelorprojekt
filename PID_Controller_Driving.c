@@ -14,10 +14,10 @@
 #define INTERVAL 100000  // 0.1 seconds in microseconds
 #define MAX_VELOCITY 0.2 // Max velocity
 #define LOG_SIZE 2000  // Maximum log entries
-#define DESIRED_DISTANCE 0.2  // Desired distance
+#define DESIRED_DISTANCE 0.3  // Desired distance 30cm
 
-float e[5] = {0, 0, 0, 0 ,0};
-float u[5] = {0, 0, 0, 0, 0};
+float e[5] = {0.0, 0.0, 0.0, 0.0 ,0.0};
+float u[5] = {0.0, 0.0, 0.0, 0.0, 0.0};
 
 // Buffers to log control values
 float u_log[LOG_SIZE][5];
@@ -70,25 +70,15 @@ float read_laser_distance(int odo_laser_fd) {
 
         float l3 = 0.0, l4 = 0.0, l5 = 0.0;  // Ensure variables are initialized
         float average_distance = 0.0;
-        
-        int matched = sscanf(buffer, "<laser %*[^l] l3=\"%f\" l4=\"%f\" l5=\"%f\"", &l3, &l4, &l5);
-        if (matched == 3) {
-            average_distance = (l3 + l4 + l5) / 3.0; 
-            if (average_distance < 0) {
-                return 0.01;
-            } else if (average_distance > 4) {
-                return 4.0;
-            } else {
-                return average_distance;
-            }
-        }
 
         // Alternative extraction
+
         char *l3_ptr = strstr(buffer, "l3=\"");
         char *l4_ptr = strstr(buffer, "l4=\"");
         char *l5_ptr = strstr(buffer, "l5=\"");
 
         if (l3_ptr && l4_ptr && l5_ptr) {
+            //+4 to skip the " ln=" " part.
             l3 = atof(l3_ptr + 4);
             l4 = atof(l4_ptr + 4);
             l5 = atof(l5_ptr + 4);
@@ -98,19 +88,18 @@ float read_laser_distance(int odo_laser_fd) {
     return -1;
 }
 
-
 // Control function
 float control(float ref, float measurement) {
 
     // Define coefficient arrays
-    double b[] = {0.3713, 0.9302, 0.6438, -0.0179, -0.1028}; // Numerator coefficients
-    double a[] = {1.0000, 1.2329, -0.1249, -0.3462, 0.0629};  // Denominator coefficients
+    double b[] = {0.4196, 1.0957, 0.8006, -0.0077, -0.1322}; // Numerator coefficients
+    double a[] = {1.0000, 1.4507, 0.0423, -0.3651, 0.0482};  // Denominator coefficients
 
     e[0] = measurement - ref ;
 
     // Corrected control equation
-    u[0] = (1.2329 * u[1]) - (0.1249 * u[2]) - (0.3462 * u[3]) + (0.0629 * u[4]) 
-     + (0.3713 * e[0]) + (0.9302 * e[1]) + (0.6438 * e[2]) - (0.0179 * e[3]) - (0.1028 * e[4]);
+    u[0] = (a[1] * u[1]) + (a[2] * u[2]) + (a[3] * u[3]) + (a[4] * u[4])
+         + (b[0] * e[0]) + (b[1] * e[1]) + (b[2] * e[2]) + (b[3] * e[3]) + (b[4] * e[4]);
 
     // Velocity clamping
     if (u[0] > MAX_VELOCITY) {
@@ -121,7 +110,7 @@ float control(float ref, float measurement) {
 
     // Store values in log buffer
     if (log_index < LOG_SIZE) {
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i < 5; i++) {
             u_log[log_index][i] = u[i];
             e_log[log_index][i] = e[i];
         }
@@ -129,7 +118,7 @@ float control(float ref, float measurement) {
     }
 
     // Shift old values for next iteration
-    for (int i = 2; i > 0; i--) {
+    for (int i = 4; i > 0; i--) {
         e[i] = e[i - 1];
         u[i] = u[i - 1];
     }
@@ -145,25 +134,21 @@ void log_data_to_file(float distance_log[]) {
     }
 
     // Updated header to include "Distance"
-    fprintf(log_file, "Iteration,Distance,u[0],u[1],u[2],e[0],e[1],e[2]\n");
+    fprintf(log_file, "Iteration,Distance,u[0],u[1],u[2],u[3],u[4],e[0],e[1],e[2],e[3],e[4]\n");
 
     for (int i = 0; i < log_index; i++) {
         fprintf(log_file, "%d,%.5f,", i, distance_log[i]); // Log iteration number and distance
-
-        // Log control values (u[0], u[1], u[2])
-        for (int j = 0; j < 3; j++) {
+        // Log control values
+        for (int j = 0; j < 5; j++) {
             fprintf(log_file, "%.5f,", u_log[i][j]);
         }
-
-        // Log error values (e[0], e[1], e[2])
-        for (int j = 0; j < 3; j++) {
+        // Log error values
+        for (int j = 0; j < 5; j++) {
             fprintf(log_file, "%.5f", e_log[i][j]);
-            if (j < 2) fprintf(log_file, ",");  // Avoid trailing comma
+            if (j < 4) fprintf(log_file, ",");  // Avoid trailing comma
         }
-
         fprintf(log_file, "\n");
     }
-
     fclose(log_file);
     printf("Control data logged to 'control_log.txt'.\n");
 }
@@ -171,6 +156,11 @@ void log_data_to_file(float distance_log[]) {
 
 // Main function
 int main() {
+    
+    float distance_log[LOG_SIZE];  //Log data
+    int elapsed_time = 0; //Time tracking
+
+    //Socket Client setup
     int odo_laser_fd = setup_client(ODO_LASER_PORT);
     if (odo_laser_fd == -1) return -1;
 
@@ -180,39 +170,30 @@ int main() {
         return -1;
     }
 
+    //Call Zoneobst on ULMSSERVER
     send_command(odo_laser_fd, "laser scanpush cmd='zoneobst'\n");
     printf("Zoneobst scan started\n");
     sleep(1);
 
-    float distance_log[LOG_SIZE];  // Add this line at the top of main()
-
-    int elapsed_time = 0;
-
-while (elapsed_time < LOG_DURATION * 1000000) {
-    float distance = read_laser_distance(odo_laser_fd);
+    //Loop function
+    while (elapsed_time < LOG_DURATION * 1000000) {
+        float distance = read_laser_distance(odo_laser_fd);
     
-    if (distance < 0) {
-        printf("Error: Invalid laser reading!\n");
-        continue;  // Skip iteration if invalid distance
+        //printf("Distance Read: %.3f m\n", distance);
+        float velocity_command = control(DESIRED_DISTANCE, distance);
+    
+        //printf("Error: %.3f m | Control Output: %.3f m/s\n", DESIRED_DISTANCE - distance, velocity_command);
+        distance_log[log_index] = distance;
+    
+        char motor_cmd[50];
+        snprintf(motor_cmd, sizeof(motor_cmd), "motorcmds %.2f %.2f\n", velocity_command, velocity_command);
+        send_command(cmd_fd, motor_cmd);
+    
+        usleep(INTERVAL);
+        elapsed_time += INTERVAL;
     }
-
-    printf("Distance Read: %.3f m\n", distance);
-
-    float velocity_command = control(DESIRED_DISTANCE, distance);
-
-    printf("Error: %.3f m | Control Output: %.3f m/s\n", DESIRED_DISTANCE - distance, velocity_command);
-
-    distance_log[log_index] = distance;  // Store distance in log
-
-    char motor_cmd[50];
-    snprintf(motor_cmd, sizeof(motor_cmd), "motorcmds %.2f %.2f\n", velocity_command, velocity_command);
-    send_command(cmd_fd, motor_cmd);
-
-    usleep(INTERVAL);
-    elapsed_time += INTERVAL;
-}
-
-
+    
+    //Exit statements
     send_command(cmd_fd, "motorcmds 0 0\n");
     printf("Stopping robot...\n");
 
