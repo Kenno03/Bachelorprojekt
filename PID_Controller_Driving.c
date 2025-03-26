@@ -10,7 +10,7 @@
 #define ODO_LASER_PORT 24919  // Robot server port
 #define CMD_PORT 31001  // Port for motion commands
 #define SERVER_IP "192.38.66.89"  // Replace with your server's IP
-#define LOG_DURATION 20  // Time in seconds to log data
+#define LOG_DURATION 6  // Time in seconds to log data
 #define INTERVAL 100000  // 0.1 seconds in microseconds
 #define MAX_VELOCITY 0.2 // Max velocity
 #define LOG_SIZE 2000  // Maximum log entries
@@ -68,21 +68,14 @@ float read_laser_distance(int odo_laser_fd) {
     if (valread > 0) {
         buffer[valread] = '\0';
 
-        float l3 = 0.0, l4 = 0.0, l5 = 0.0;  // Ensure variables are initialized
-        float average_distance = 0.0;
+        float l4;
 
         // Alternative extraction
-
-        char *l3_ptr = strstr(buffer, "l3=\"");
         char *l4_ptr = strstr(buffer, "l4=\"");
-        char *l5_ptr = strstr(buffer, "l5=\"");
-
-        if (l3_ptr && l4_ptr && l5_ptr) {
-            //+4 to skip the " ln=" " part.
-            l3 = atof(l3_ptr + 4);
+        if (l4_ptr) {
+            //+4 to skip the " l4=" " part.
             l4 = atof(l4_ptr + 4);
-            l5 = atof(l5_ptr + 4);
-            return (l3 + l4 + l5) / 3.0;
+            return l4;
         }
     }
     return -1;
@@ -192,7 +185,7 @@ int main() {
         usleep(INTERVAL);
         elapsed_time += INTERVAL;
     }
-    
+
     //Exit statements
     send_command(cmd_fd, "motorcmds 0 0\n");
     printf("Stopping robot...\n");
