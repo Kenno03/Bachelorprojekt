@@ -10,18 +10,19 @@
 #define ODO_LASER_PORT 24919  // Robot server port
 #define CMD_PORT 31001  // Port for motion commands
 #define SERVER_IP "192.38.66.89"  // Replace with your server's IP
-#define LOG_DURATION 6  // Time in seconds to log data
+#define LOG_DURATION 15  // Time in seconds to log data
 #define INTERVAL 100000  // 0.1 seconds in microseconds
 #define MAX_VELOCITY 0.2 // Max velocity
 #define LOG_SIZE 2000  // Maximum log entries
 #define DESIRED_DISTANCE 0.3  // Desired distance 30cm
 
-float e[5] = {0.0, 0.0, 0.0, 0.0 ,0.0};
-float u[5] = {0.0, 0.0, 0.0, 0.0, 0.0};
+float e[3] = {0.0, 0.0, 0.0};
+float u[3] = {0.0, 0.0, 0.0};
 
 // Buffers to log control values
-float u_log[LOG_SIZE][5];
-float e_log[LOG_SIZE][5];
+float u_log[LOG_SIZE][3];
+float e_log[LOG_SIZE][3];
+float time_log[LOG_SIZE];  // Store time in seconds
 int log_index = 0;
 
 // Function to set up a client connection
@@ -60,6 +61,7 @@ void send_command(int client_fd, const char* command) {
 }
 
 // Read laser distance
+// Read laser distance
 float read_laser_distance(int odo_laser_fd) {
     char buffer[4096] = {0};
     send(odo_laser_fd, "zoneobst\n", 9, 0);
@@ -68,56 +70,62 @@ float read_laser_distance(int odo_laser_fd) {
     if (valread > 0) {
         buffer[valread] = '\0';
 
-        float l4;
-
-        // Alternative extraction
         char *l4_ptr = strstr(buffer, "l4=\"");
         if (l4_ptr) {
-            //+4 to skip the " l4=" " part.
-            l4 = atof(l4_ptr + 4);
-            return l4;
+            float l4 = atof(l4_ptr + 4);
+
+            //Check that the value is in valid range
+            if (l4 >= 0.1 && l4 <= 4.0) {
+                return l4;
+            }
         }
     }
+    // Fallback if nothing valid is found
     return -1;
 }
 
+
 // Control function
 float control(float ref, float measurement) {
-
     // Define coefficient arrays
-    double b[] = {0.4196, 1.0957, 0.8006, -0.0077, -0.1322}; // Numerator coefficients
-    double a[] = {1.0000, 1.4507, 0.0423, -0.3651, 0.0482};  // Denominator coefficients
+    double b[] = {  23.0548,  -32.0138,   11.0703 }; // Numerator coefficients
+    double a[] = {   1.0000,   -0.3182,   -0.6818 };  // Denominator coefficients
 
-    e[0] = measurement - ref ;
+    // Compute current error
+    e[0] = measurement - ref;
 
-    // Corrected control equation
-    u[0] = (a[1] * u[1]) + (a[2] * u[2]) + (a[3] * u[3]) + (a[4] * u[4])
-         + (b[0] * e[0]) + (b[1] * e[1]) + (b[2] * e[2]) + (b[3] * e[3]) + (b[4] * e[4]);
+    // Compute *unclamped* control signal
+    u[0] =  u[0] = (b[0] * e[0]) + (b[1] * e[1]) + (b[2] * e[2]) -(a[1] * u[1]) - (a[2] * u[2]);
 
-    // Velocity clamping
+
+
+    // Then clamp output
     if (u[0] > MAX_VELOCITY) {
         u[0] = MAX_VELOCITY;
     } else if (u[0] < 0) {
         u[0] = 0;
     }
 
-    // Store values in log buffer
+
+    // Log current values
     if (log_index < LOG_SIZE) {
-        for (int i = 0; i < 5; i++) {
+        for (int i = 0; i < 3; i++) {
             u_log[log_index][i] = u[i];
             e_log[log_index][i] = e[i];
         }
+        time_log[log_index] = log_index * 0.1;  // 100ms intervals
         log_index++;
     }
 
-    // Shift old values for next iteration
-    for (int i = 4; i > 0; i--) {
-        e[i] = e[i - 1];
+    // Shift history *after* clamping
+    for (int i = 2; i > 0; i--) {
         u[i] = u[i - 1];
+        e[i] = e[i - 1];
     }
 
     return u[0];
 }
+
 
 void log_data_to_file(float distance_log[]) {
     FILE *log_file = fopen("control_log.txt", "w");
@@ -126,25 +134,30 @@ void log_data_to_file(float distance_log[]) {
         return;
     }
 
-    // Updated header to include "Distance"
-    fprintf(log_file, "Iteration,Distance,u[0],u[1],u[2],u[3],u[4],e[0],e[1],e[2],e[3],e[4]\n");
+    // Updated header to include time
+    fprintf(log_file, "Iteration,Time (s),Distance,u[0],u[1],u[2],e[0],e[1],e[2]\n");
 
     for (int i = 0; i < log_index; i++) {
-        fprintf(log_file, "%d,%.5f,", i, distance_log[i]); // Log iteration number and distance
+        fprintf(log_file, "%d,%.6f,%.5f,", i, time_log[i], distance_log[i]);
+
         // Log control values
-        for (int j = 0; j < 5; j++) {
+        for (int j = 0; j < 3; j++) {
             fprintf(log_file, "%.5f,", u_log[i][j]);
         }
+
         // Log error values
-        for (int j = 0; j < 5; j++) {
+        for (int j = 0; j < 3; j++) {
             fprintf(log_file, "%.5f", e_log[i][j]);
-            if (j < 4) fprintf(log_file, ",");  // Avoid trailing comma
+            if (j < 2) fprintf(log_file, ",");
         }
+
         fprintf(log_file, "\n");
     }
+
     fclose(log_file);
     printf("Control data logged to 'control_log.txt'.\n");
 }
+
 
 
 // Main function
@@ -176,8 +189,9 @@ int main() {
         float velocity_command = control(DESIRED_DISTANCE, distance);
     
         //printf("Error: %.3f m | Control Output: %.3f m/s\n", DESIRED_DISTANCE - distance, velocity_command);
+        
         distance_log[log_index] = distance;
-    
+        time_log[log_index] = elapsed_time / 1e6;  // Convert microseconds to seconds
         char motor_cmd[50];
         snprintf(motor_cmd, sizeof(motor_cmd), "motorcmds %.2f %.2f\n", velocity_command, velocity_command);
         send_command(cmd_fd, motor_cmd);
