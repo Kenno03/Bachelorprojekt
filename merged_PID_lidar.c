@@ -219,12 +219,13 @@ int main() {
 
         // Process each complete <bin>...</bin> message
         while (1) {
-            if (strstr(buffer, "<bin") == NULL) {
-                printf("No <bin> found in current buffer.\n");
-            }            
             char* bin_start = strstr(buffer, "<bin");
             char* bin_end = strstr(buffer, "</bin>");
-            if (!(bin_start && bin_end && bin_end > bin_start)) break;
+            if (!(bin_start && bin_end && bin_end > bin_start)) {
+                // We might still be reading the rest of the <bin> block
+                break;
+            }
+            
 
             int block_len = bin_end - bin_start + strlen("</bin>");
             char bin_block[16384];
