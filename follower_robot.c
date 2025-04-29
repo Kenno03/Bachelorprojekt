@@ -1,54 +1,51 @@
 // --- Merged Program: LiDAR Centroid Tracking + Velocity Control + Curvature Steering ---
 // Author: Markus Kenno Hansen
-// Description: Tracks a leading robot using LiDAR centroid clustering,
-// calculates curvature based on angle deviation, and uses PID control
-// to adjust velocity while steering with differential wheel speeds.
 
 #include <arpa/inet.h>
 #include <math.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
-#include <unistd.h>
 #include <sys/time.h>
 #include <time.h>
+#include <unistd.h>
+
+volatile int stop_requested = 0; // Global flag
 
 // --- Configuration ---
-#define ODO_LASER_PORT 24919                  // Port for LiDAR data
-#define CMD_PORT 31001                        // Port for sending motor commands
-#define SERVER_IP "192.38.66.91"              // IP of the robot system
-#define MAX_POINTS 512                        // Max number of LiDAR scan points
-#define ANGLE_RESOLUTION 0.36f               // Angular resolution per point
-#define START_ANGLE_DEG -120.0f              // Starting angle of LiDAR scan
-#define ROTATION_OFFSET 120.0f               // Offset to align front to 90°
+#define ODO_LASER_PORT 24919
+#define CMD_PORT 31001
+#define SERVER_IP "192.38.66.87"
+#define MAX_POINTS 512
+#define ANGLE_RESOLUTION 0.36f
+#define START_ANGLE_DEG -120.0f
+#define ROTATION_OFFSET 120.0f
 #define M_PI 3.14159265358979323846
 #define MAX_CLUSTERS 32
 #define MAX_CENTROID_HISTORY 1000
-#define LOG_DURATION 30                      // How long the program should run (seconds)
-#define INTERVAL 100000                      // Delay between loop iterations (100ms)
-#define MAX_VELOCITY 0.2                     // Cap velocity output
-#define DESIRED_DISTANCE 0.3f                // Target distance to maintain
-#define SEARCH_ANGLE_MARGIN 20.0f            // +/- angle window to accept clusters
-#define WHEELBASE 0.23f                      // Distance between robot wheels
-#define DEADZONE_MIN 87.0f                   // Do not update angle if within 87–93°
+#define INTERVAL 100000
+#define MAX_VELOCITY 0.3
+#define DESIRED_DISTANCE 0.3f
+#define SEARCH_ANGLE_MARGIN 20.0f
+#define WHEELBASE 0.23f
+#define DEADZONE_MIN 87.0f
 #define DEADZONE_MAX 93.0f
-#define LOOKAHEAD_DIST 0.3f                  // Lookahead used for curvature calc
-#define MAX_CENTROID_JUMP 0.3f               // Max change in distance between centroids
-
-// --- Logging ---
+#define LOOKAHEAD_DIST 0.3f
+#define MAX_CENTROID_JUMP 0.3f
 #define LOG_SIZE 2000
-float e[3] = {0}, u[3] = {0};                // PID error and control memory
-float u_log[LOG_SIZE][3];                   // PID control log
-float e_log[LOG_SIZE][3];                   // PID error log
-float time_log[LOG_SIZE];                   // Timestamps
-float distance_log[LOG_SIZE];               // Distance to centroid
-float angle_log[LOG_SIZE];                  // Angle of centroid
-float v_l_log[LOG_SIZE];                    // Left motor command
-float v_r_log[LOG_SIZE];                    // Right motor command
-int log_index = 0;                           // Log entry index
 
-// --- Data structs ---
+float e[3] = {0}, u[3] = {0};
+float u_log[LOG_SIZE][3];
+float e_log[LOG_SIZE][3];
+float time_log[LOG_SIZE];
+float distance_log[LOG_SIZE];
+float angle_log[LOG_SIZE];
+float v_l_log[LOG_SIZE];
+float v_r_log[LOG_SIZE];
+int log_index = 0;
+
 typedef struct {
     float angle_sum, total_distance;
     int count;
@@ -63,7 +60,18 @@ CentroidLog trajectory[MAX_CENTROID_HISTORY];
 int traj_count = 0;
 float scan_log[MAX_POINTS];
 
-// --- Setup TCP client connection ---
+void* input_thread(void* arg) {
+    char command[64];
+    while (1) {
+        fgets(command, sizeof(command), stdin);
+        if (strncmp(command, "stop", 4) == 0) {
+            stop_requested = 1;
+            break;
+        }
+    }
+    return NULL;
+}
+
 int setup_client(int port) {
     int client_fd;
     struct sockaddr_in serv_addr;
@@ -87,13 +95,11 @@ int setup_client(int port) {
     return client_fd;
 }
 
-// --- Send command over socket ---
 void send_command(int client_fd, const char* command) {
     send(client_fd, command, strlen(command), 0);
-    usleep(100000); // Wait for server to process
+    usleep(100000);
 }
 
-// --- Extract binary LiDAR payload from XML-like format ---
 char* extract_bin_data(char* buffer) {
     char* start = strstr(buffer, "<bin");
     if (!start) return NULL;
@@ -110,7 +116,6 @@ char* extract_bin_data(char* buffer) {
     return hex_data;
 }
 
-// --- Convert LiDAR hex data to float distances ---
 void parse_lidar_bin(char *hex_data, float *distances, int count) {
     for (int i = 0; i < count; i++) {
         int index = i * 4;
@@ -122,7 +127,6 @@ void parse_lidar_bin(char *hex_data, float *distances, int count) {
     }
 }
 
-// --- Cluster consecutive valid LiDAR points ---
 int find_clusters(float *distances, Cluster *clusters, int max_clusters) {
     const float min_distance = 0.15f, max_distance = 3.0f;
     int cluster_count = 0, in_cluster = 0;
@@ -157,19 +161,16 @@ int find_clusters(float *distances, Cluster *clusters, int max_clusters) {
     return cluster_count;
 }
 
-// --- Discrete PID controller (distance) ---
 float control(float ref, float measurement) {
     double b[] = {23.0548, -32.0138, 11.0703};
     double a[] = {1.0, -0.3182, -0.6818};
 
     e[0] = measurement - ref;
-    u[0] = b[0]*e[0] + b[1]*e[1] + b[2]*e[2] - a[1]*u[1] - a[2]*u[2];
+    u[0] = 0.4*(b[0]*e[0] + b[1]*e[1] + b[2]*e[2] - a[1]*u[1] - a[2]*u[2]);
 
-    // Saturate output
     if (u[0] > MAX_VELOCITY) u[0] = MAX_VELOCITY;
     else if (u[0] < 0) u[0] = 0;
 
-    // Log values
     if (log_index < LOG_SIZE) {
         for (int i = 0; i < 3; i++) {
             u_log[log_index][i] = u[i];
@@ -178,7 +179,6 @@ float control(float ref, float measurement) {
         time_log[log_index] = log_index * 0.1f;
     }
 
-    // Shift buffers
     for (int i = 2; i > 0; i--) {
         u[i] = u[i-1];
         e[i] = e[i-1];
@@ -187,26 +187,14 @@ float control(float ref, float measurement) {
     return u[0];
 }
 
-// --- Save trajectory log to CSV ---
-void log_trajectory(const char* filename) {
+void log_full(const char* filename) {
     FILE* fp = fopen(filename, "w");
     if (!fp) { perror("Failed to open log file"); return; }
-    fprintf(fp, "angle_deg,distance_m,x,y\n");
-    for (int i = 0; i < traj_count; i++) {
-        fprintf(fp, "%.2f,%.3f,%.3f,%.3f\n", trajectory[i].angle_deg,
-                trajectory[i].distance_m, trajectory[i].x, trajectory[i].y);
-    }
-    fclose(fp);
-}
-
-// --- Save PID and control signal log to CSV ---
-void log_control(const char* filename) {
-    FILE* fp = fopen(filename, "w");
-    if (!fp) { perror("Failed to open control log"); return; }
-    fprintf(fp, "Time,Distance,Angle,v_l,v_r,u[0],u[1],u[2],e[0],e[1],e[2]\n");
-    for (int i = 0; i < log_index; i++) {
-        fprintf(fp, "%.2f,%.3f,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
+    fprintf(fp, "Time,Distance,Angle,X,Y,v_l,v_r,u0,u1,u2,e0,e1,e2\n");
+    for (int i = 0; i < traj_count && i < log_index; i++) {
+        fprintf(fp, "%.2f,%.3f,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
             time_log[i], distance_log[i], angle_log[i],
+            trajectory[i].x, trajectory[i].y,
             v_l_log[i], v_r_log[i],
             u_log[i][0], u_log[i][1], u_log[i][2],
             e_log[i][0], e_log[i][1], e_log[i][2]);
@@ -214,27 +202,28 @@ void log_control(const char* filename) {
     fclose(fp);
 }
 
-// --- MAIN PROGRAM ---
 int main() {
+    pthread_t thread_id;
+    pthread_create(&thread_id, NULL, input_thread, NULL);
+
     int laser_fd = setup_client(ODO_LASER_PORT);
     int cmd_fd = setup_client(CMD_PORT);
     if (laser_fd == -1 || cmd_fd == -1) return -1;
 
     send_command(laser_fd, "scanpush cmd='scanget'\n");
-    printf("Continuous LiDAR scan started.\n");
+    printf("Continuous LiDAR scan started. Type 'stop' to end.\n");
 
     char buffer[32768] = {0};
     int buffer_len = 0;
     float search_angle = 90.0f;
-    time_t start = time(NULL);
 
-    while (difftime(time(NULL), start) < LOG_DURATION) {
+    while (!stop_requested) {
         int bytes = read(laser_fd, buffer + buffer_len, sizeof(buffer) - buffer_len - 1);
         if (bytes <= 0) { usleep(10000); continue; }
         buffer_len += bytes;
         buffer[buffer_len] = '\0';
 
-        while (1) {
+        while (!stop_requested) {
             char* bin_start = strstr(buffer, "<bin");
             char* bin_end = strstr(buffer, "</bin>");
             if (!(bin_start && bin_end && bin_end > bin_start)) break;
@@ -271,7 +260,6 @@ int main() {
                 float angle_rad = angle_deg * M_PI / 180.0f;
                 float dist = clusters[best_idx].centroid_distance;
 
-                // Reject centroid jump
                 if (traj_count > 0) {
                     float last_dist = trajectory[traj_count - 1].distance_m;
                     if (fabsf(dist - last_dist) > MAX_CENTROID_JUMP) continue;
@@ -280,7 +268,6 @@ int main() {
                 float velocity_cmd = control(DESIRED_DISTANCE, dist);
                 distance_log[log_index] = dist;
 
-                // --- Curvature-based steering ---
                 float angle_error = angle_deg - 90.0f;
                 float angle_rad_err = angle_error * M_PI / 180.0f;
                 float kappa = 2.0f * sinf(angle_rad_err) / LOOKAHEAD_DIST;
@@ -316,9 +303,7 @@ int main() {
     shutdown(cmd_fd, SHUT_RDWR);
     close(cmd_fd);
     close(laser_fd);
-    printf("Logging Trajectory\n");
-    log_trajectory("trajectory_log.csv");
-    printf("Logging Control\n");
-    log_control("control_log.csv");
+
+    log_full("full_log.csv");
     return 0;
 }
