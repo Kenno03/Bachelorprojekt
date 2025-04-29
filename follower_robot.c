@@ -32,7 +32,7 @@ volatile int stop_requested = 0; // Global flag
 #define WHEELBASE 0.23f
 #define DEADZONE_MIN 87.0f
 #define DEADZONE_MAX 93.0f
-#define LOOKAHEAD_DIST 0.3f
+#define LOOKAHEAD_DIST 0.5f
 #define MAX_CENTROID_JUMP 0.3f
 #define LOG_SIZE 2000
 
@@ -212,6 +212,7 @@ int main() {
 
     send_command(laser_fd, "scanpush cmd='scanget'\n");
     printf("Continuous LiDAR scan started. Type 'stop' to end.\n");
+    send_command(cmd_fd, "log \"$odox\" \"$odoy\" \"$odovelocity\" \"$time\"\n");
 
     char buffer[32768] = {0};
     int buffer_len = 0;
@@ -306,4 +307,4 @@ int main() {
 
     log_full("full_log.csv");
     return 0;
-}
+}:
