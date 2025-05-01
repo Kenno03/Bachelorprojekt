@@ -1,6 +1,5 @@
-// --- Improved LiDAR Follower Program (Stabilized Steering + Safety) ---
+// --- Improved LiDAR Follower Program (Stabilized Steering + Safety + Cluster Size Logging) ---
 // Author: Markus Kenno Hansen
-// Updates: Emergency stop, smoother turning, angle deadzone, curvature filtering
 
 #include <arpa/inet.h>
 #include <math.h>
@@ -29,11 +28,11 @@
 #define SEARCH_ANGLE_MARGIN 25.0f
 #define WHEELBASE 0.23f
 #define DEADZONE_WIDTH 3.0f
-#define LOOKAHEAD_DIST 0.3f
+#define LOOKAHEAD_DIST 0.5f
 #define MAX_CENTROID_JUMP 0.3f
 #define ROBOT_WIDTH 0.28f
 #define LOG_SIZE 2000
-#define MAX_ANGLE_JUMP 20.0f
+#define MAX_ANGLE_JUMP 30.0f
 #define CENTROID_DELAY 5
 
 volatile int stop_requested = 0;
@@ -46,6 +45,7 @@ float distance_log[LOG_SIZE];
 float angle_log[LOG_SIZE];
 float v_l_log[LOG_SIZE];
 float v_r_log[LOG_SIZE];
+int cluster_size_log[LOG_SIZE];
 int log_index = 0;
 
 typedef struct {
@@ -117,7 +117,7 @@ void parse_lidar_bin(char *hex_data, float *distances, int count) {
 }
 
 int find_clusters(float *distances, Cluster *clusters, int max_clusters) {
-    const float min_distance = 0.15f, max_distance = 3.0f;
+    const float min_distance = 0.15f, max_distance = 1.0f;
     int cluster_count = 0, in_cluster = 0;
     Cluster current = {0};
     for (int i = 0; i <= MAX_POINTS; i++) {
@@ -159,14 +159,15 @@ float control(float ref, float meas) {
 void log_full(const char* filename) {
     FILE* fp = fopen(filename, "w");
     if (!fp) return;
-    fprintf(fp, "Time,Distance,Angle,X,Y,v_l,v_r,u0,u1,u2,e0,e1,e2\n");
+    fprintf(fp, "Time,Distance,Angle,X,Y,v_l,v_r,u0,u1,u2,e0,e1,e2,ClusterSize\n");
     for (int i = 0; i < traj_count && i < log_index; i++) {
-        fprintf(fp, "%.2f,%.3f,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
+        fprintf(fp, "%.2f,%.3f,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d\n",
             time_log[i], distance_log[i], angle_log[i],
             trajectory[i].x, trajectory[i].y,
             v_l_log[i], v_r_log[i],
             u_log[i][0], u_log[i][1], u_log[i][2],
-            e_log[i][0], e_log[i][1], e_log[i][2]);
+            e_log[i][0], e_log[i][1], e_log[i][2],
+            cluster_size_log[i]);
     }
     fclose(fp);
 }
@@ -182,7 +183,7 @@ int main() {
     int cmd_fd = setup_client(CMD_PORT);
     if (laser_fd == -1 || cmd_fd == -1) return -1;
 
-    printf("Servers Started...");
+    printf("Servers Started...\n");
 
     send_command(laser_fd, "scanpush cmd='scanget'\n");
     send_command(cmd_fd, "log \"$odox\" \"$odoy\" \"$odovelocity\" \"$time\"\n");
@@ -226,11 +227,14 @@ int main() {
             int best_idx = -1;
             float best_score = 9999.0f;
             for (int i = 0; i < n; i++) {
+                if (clusters[i].count < 20 || clusters[i].count > 140) continue;
+
                 float a = clusters[i].centroid_angle;
                 float d = clusters[i].centroid_distance;
-                float expected_points = 2.0f * atanf((ROBOT_WIDTH/2.0f)/d) / (ANGLE_RESOLUTION*M_PI/180.0f);
+                float expected_points = 2.0f * atanf((ROBOT_WIDTH / 2.0f) / d) / (ANGLE_RESOLUTION * M_PI / 180.0f);
                 float size_penalty = fabsf(clusters[i].count - expected_points);
                 float score = d + 0.2f * fabs(a - search_angle) + 0.2f * size_penalty;
+
                 if (fabs(a - search_angle) <= SEARCH_ANGLE_MARGIN && score < best_score) {
                     best_score = score;
                     best_idx = i;
@@ -238,10 +242,13 @@ int main() {
             }
 
             float angle_deg, dist;
+            int selected_cluster_size = -1;
+
             if (best_idx >= 0) {
                 frames_without_centroid = 0;
                 angle_deg = clusters[best_idx].centroid_angle;
                 dist = clusters[best_idx].centroid_distance;
+                selected_cluster_size = clusters[best_idx].count;
                 last_valid_angle_deg = angle_deg;
                 last_valid_distance = dist;
             } else if (frames_without_centroid < 5) {
@@ -272,12 +279,6 @@ int main() {
             float elapsed_time = (current_time.tv_sec - start_time.tv_sec) +
                                  (current_time.tv_usec - start_time.tv_usec) / 1e6f;
 
-            if (log_index < LOG_SIZE) {
-                time_log[log_index] = elapsed_time;
-                distance_log[log_index] = dist;
-                angle_log[log_index] = angle_deg;
-            }
-
             float angle_error = angle_deg - 90.0f;
             float angle_err_rad = angle_error * M_PI / 180.0f;
             float kappa_raw = 2.0f * sinf(angle_err_rad) / LOOKAHEAD_DIST;
@@ -287,13 +288,8 @@ int main() {
             else
                 kappa_filtered = 0.7f * kappa_filtered + 0.3f * kappa_raw;
 
-            float v_l, v_r;
-            if (fabsf(angle_error) < 2.5f) {
-                v_l = v_r = velocity_cmd;
-            } else {
-                v_l = velocity_cmd * (1.0f - kappa_filtered * WHEELBASE / 2.0f);
-                v_r = velocity_cmd * (1.0f + kappa_filtered * WHEELBASE / 2.0f);
-            }
+            float v_l = velocity_cmd * (1.0f - kappa_filtered * WHEELBASE / 2.0f);
+            float v_r = velocity_cmd * (1.0f + kappa_filtered * WHEELBASE / 2.0f);
 
             char cmd[64];
             snprintf(cmd, sizeof(cmd), "motorcmds %.2f %.2f\n", v_l, v_r);
@@ -305,17 +301,25 @@ int main() {
             trajectory[traj_count++] = (CentroidLog){ angle_deg, dist, x, y };
 
             if (log_index < LOG_SIZE) {
+                time_log[log_index] = elapsed_time;
+                distance_log[log_index] = dist;
+                angle_log[log_index] = angle_deg;
                 v_l_log[log_index] = v_l;
                 v_r_log[log_index] = v_r;
+                u_log[log_index][0] = u[0];
+                u_log[log_index][1] = u[1];
+                u_log[log_index][2] = u[2];
+                e_log[log_index][0] = e[0];
+                e_log[log_index][1] = e[1];
+                e_log[log_index][2] = e[2];
+                cluster_size_log[log_index] = selected_cluster_size;
+                log_index++;
             }
 
             float angle_offset = fabsf(angle_deg - 90.0f);
-            if (angle_offset > 10.0f)
-                search_angle = 0.7f * search_angle + 0.3f * angle_deg;
-            else
-                search_angle = 0.9f * search_angle + 0.1f * angle_deg;
-
-            log_index++;
+            search_angle = (angle_offset > 10.0f) ?
+                           0.7f * search_angle + 0.3f * angle_deg :
+                           0.9f * search_angle + 0.1f * angle_deg;
         }
     }
 
