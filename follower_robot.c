@@ -1,4 +1,4 @@
-// --- Improved LiDAR Follower Program (Stabilized Steering + Safety + Cluster Size Logging) ---
+// --- Improved LiDAR Follower Program with Global Centroid Logging (Offset Applied) ---
 // Author: Markus Kenno Hansen
 
 #include <arpa/inet.h>
@@ -10,7 +10,6 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <sys/time.h>
-#include <time.h>
 
 #define ODO_LASER_PORT 24919
 #define CMD_PORT 31001
@@ -27,24 +26,18 @@
 #define DESIRED_DISTANCE 0.3f
 #define SEARCH_ANGLE_MARGIN 25.0f
 #define WHEELBASE 0.23f
-#define DEADZONE_WIDTH 3.0f
 #define LOOKAHEAD_DIST 0.5f
 #define MAX_CENTROID_JUMP 0.3f
 #define ROBOT_WIDTH 0.28f
 #define LOG_SIZE 2000
 #define MAX_ANGLE_JUMP 30.0f
-#define CENTROID_DELAY 5
 
 volatile int stop_requested = 0;
 
 float e[3] = {0}, u[3] = {0};
-float u_log[LOG_SIZE][3];
-float e_log[LOG_SIZE][3];
-float time_log[LOG_SIZE];
-float distance_log[LOG_SIZE];
-float angle_log[LOG_SIZE];
-float v_l_log[LOG_SIZE];
-float v_r_log[LOG_SIZE];
+float u_log[LOG_SIZE][3], e_log[LOG_SIZE][3];
+float time_log[LOG_SIZE], distance_log[LOG_SIZE], angle_log[LOG_SIZE];
+float v_l_log[LOG_SIZE], v_r_log[LOG_SIZE];
 int cluster_size_log[LOG_SIZE];
 int log_index = 0;
 
@@ -55,12 +48,17 @@ typedef struct {
 } Cluster;
 
 typedef struct {
-    float angle_deg, distance_m, x, y;
+    float angle_deg, distance_m;
+    float x_global, y_global;
 } CentroidLog;
 
 CentroidLog trajectory[MAX_CENTROID_HISTORY];
 int traj_count = 0;
 float scan_log[MAX_POINTS];
+
+float x_global = 0.0f, y_global = 0.0f, theta_global = 0.0f;
+float x_offset = 0.0f, y_offset = 0.0f;
+int offset_initialized = 0;
 
 void* input_thread(void* arg) {
     char command[64];
@@ -159,11 +157,11 @@ float control(float ref, float meas) {
 void log_full(const char* filename) {
     FILE* fp = fopen(filename, "w");
     if (!fp) return;
-    fprintf(fp, "Time,Distance,Angle,X,Y,v_l,v_r,u0,u1,u2,e0,e1,e2,ClusterSize\n");
+    fprintf(fp, "Time,Distance,Angle,X_global,Y_global,v_l,v_r,u0,u1,u2,e0,e1,e2,ClusterSize\n");
     for (int i = 0; i < traj_count && i < log_index; i++) {
         fprintf(fp, "%.2f,%.3f,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d\n",
             time_log[i], distance_log[i], angle_log[i],
-            trajectory[i].x, trajectory[i].y,
+            trajectory[i].x_global, trajectory[i].y_global,
             v_l_log[i], v_r_log[i],
             u_log[i][0], u_log[i][1], u_log[i][2],
             e_log[i][0], e_log[i][1], e_log[i][2],
@@ -184,17 +182,15 @@ int main() {
     if (laser_fd == -1 || cmd_fd == -1) return -1;
 
     printf("Servers Started...\n");
-
     send_command(laser_fd, "scanpush cmd='scanget'\n");
-    send_command(cmd_fd, "log \"$odox\" \"$odoy\" \"$odovelocity\" \"$time\"\n");
 
     char buffer[32768] = {0};
     int buffer_len = 0;
     float search_angle = 90.0f;
-    static float kappa_filtered = 0;
-    static float last_valid_angle_deg = 90.0f;
-    static float last_valid_distance = DESIRED_DISTANCE;
-    static int frames_without_centroid = 0;
+    float kappa_filtered = 0;
+    float last_valid_angle_deg = 90.0f;
+    float last_valid_distance = DESIRED_DISTANCE;
+    int frames_without_centroid = 0;
 
     while (!stop_requested) {
         int bytes = read(laser_fd, buffer + buffer_len, sizeof(buffer) - buffer_len - 1);
@@ -228,13 +224,11 @@ int main() {
             float best_score = 9999.0f;
             for (int i = 0; i < n; i++) {
                 if (clusters[i].count < 20 || clusters[i].count > 140) continue;
-
                 float a = clusters[i].centroid_angle;
                 float d = clusters[i].centroid_distance;
                 float expected_points = 2.0f * atanf((ROBOT_WIDTH / 2.0f) / d) / (ANGLE_RESOLUTION * M_PI / 180.0f);
                 float size_penalty = fabsf(clusters[i].count - expected_points);
                 float score = d + 0.2f * fabs(a - search_angle) + 0.2f * size_penalty;
-
                 if (fabs(a - search_angle) <= SEARCH_ANGLE_MARGIN && score < best_score) {
                     best_score = score;
                     best_idx = i;
@@ -243,7 +237,6 @@ int main() {
 
             float angle_deg, dist;
             int selected_cluster_size = -1;
-
             if (best_idx >= 0) {
                 frames_without_centroid = 0;
                 angle_deg = clusters[best_idx].centroid_angle;
@@ -279,26 +272,40 @@ int main() {
             float elapsed_time = (current_time.tv_sec - start_time.tv_sec) +
                                  (current_time.tv_usec - start_time.tv_usec) / 1e6f;
 
+            float dt = INTERVAL / 1e6f;
+            float v = velocity_cmd;
+
             float angle_error = angle_deg - 90.0f;
             float angle_err_rad = angle_error * M_PI / 180.0f;
             float kappa_raw = 2.0f * sinf(angle_err_rad) / LOOKAHEAD_DIST;
+            kappa_filtered = (fabsf(angle_error) > 10.0f) ?
+                             kappa_raw : 0.7f * kappa_filtered + 0.3f * kappa_raw;
 
-            if (fabsf(angle_error) > 10.0f)
-                kappa_filtered = kappa_raw;
-            else
-                kappa_filtered = 0.7f * kappa_filtered + 0.3f * kappa_raw;
-
-            float v_l = velocity_cmd * (1.0f - kappa_filtered * WHEELBASE / 2.0f);
-            float v_r = velocity_cmd * (1.0f + kappa_filtered * WHEELBASE / 2.0f);
+            float v_l = v * (1.0f - kappa_filtered * WHEELBASE / 2.0f);
+            float v_r = v * (1.0f + kappa_filtered * WHEELBASE / 2.0f);
 
             char cmd[64];
             snprintf(cmd, sizeof(cmd), "motorcmds %.2f %.2f\n", v_l, v_r);
             send_command(cmd_fd, cmd);
+            
+
+            theta_global += ((v_r - v_l) / WHEELBASE) * dt;
+            x_global += v * cosf(theta_global) * dt;
+            y_global += v * sinf(theta_global) * dt;
+
+            if (!offset_initialized) {
+                x_offset = x_global;
+                y_offset = y_global;
+                offset_initialized = 1;
+            }
 
             float angle_rad = angle_deg * M_PI / 180.0f;
-            float x = cosf(angle_rad) * dist;
-            float y = sinf(angle_rad) * dist;
-            trajectory[traj_count++] = (CentroidLog){ angle_deg, dist, x, y };
+            float x_local = cosf(angle_rad) * dist;
+            float y_local = sinf(angle_rad) * dist;
+            float xg = x_global + cosf(theta_global) * x_local - sinf(theta_global) * y_local - x_offset;
+            float yg = y_global + sinf(theta_global) * x_local + cosf(theta_global) * y_local - y_offset;
+
+            trajectory[traj_count++] = (CentroidLog){ angle_deg, dist, xg, yg };
 
             if (log_index < LOG_SIZE) {
                 time_log[log_index] = elapsed_time;
