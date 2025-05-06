@@ -1,4 +1,4 @@
-// --- Improved LiDAR Follower Program with Global Centroid Logging (Offset Applied) ---
+// --- Improved LiDAR Follower Program with Geometric Offset Biasing and Fixed Angle Reference ---
 // Author: Markus Kenno Hansen
 
 #include <arpa/inet.h>
@@ -23,10 +23,10 @@
 #define MAX_CENTROID_HISTORY 1000
 #define INTERVAL 100000
 #define MAX_VELOCITY 0.2
-#define DESIRED_DISTANCE 0.3f
+#define DESIRED_DISTANCE 0.2f
 #define SEARCH_ANGLE_MARGIN 25.0f
 #define WHEELBASE 0.23f
-#define LOOKAHEAD_DIST 0.5f
+#define LOOKAHEAD_DIST 0.7f
 #define MAX_CENTROID_JUMP 0.3f
 #define ROBOT_WIDTH 0.28f
 #define LOG_SIZE 2000
@@ -45,6 +45,8 @@ typedef struct {
     float angle_sum, total_distance;
     int count;
     float centroid_angle, centroid_distance;
+    float min_distance;
+    float min_angle;
 } Cluster;
 
 typedef struct {
@@ -118,9 +120,12 @@ int find_clusters(float *distances, Cluster *clusters, int max_clusters) {
     const float min_distance = 0.15f, max_distance = 1.0f;
     int cluster_count = 0, in_cluster = 0;
     Cluster current = {0};
+    current.min_distance = 9999.0f;
+
     for (int i = 0; i <= MAX_POINTS; i++) {
         float r = (i < MAX_POINTS) ? distances[i] : 0.0f;
         int valid = (r > min_distance && r <= max_distance);
+
         if (!valid || i == MAX_POINTS) {
             if (in_cluster && current.count >= 3 && cluster_count < max_clusters) {
                 current.centroid_angle = current.angle_sum / current.count;
@@ -129,12 +134,18 @@ int find_clusters(float *distances, Cluster *clusters, int max_clusters) {
             }
             in_cluster = 0;
             memset(&current, 0, sizeof(Cluster));
+            current.min_distance = 9999.0f;
         } else {
-            float a = START_ANGLE_DEG + i * ANGLE_RESOLUTION + ROTATION_OFFSET;
+            // Shift angle so 0° = forward
+            float a = START_ANGLE_DEG + i * ANGLE_RESOLUTION + ROTATION_OFFSET - 90.0f;
             if (!in_cluster) in_cluster = 1;
             current.total_distance += r;
             current.angle_sum += a;
             current.count++;
+            if (r < current.min_distance) {
+                current.min_distance = r;
+                current.min_angle = a;
+            }
         }
     }
     return cluster_count;
@@ -186,9 +197,9 @@ int main() {
 
     char buffer[32768] = {0};
     int buffer_len = 0;
-    float search_angle = 90.0f;
+    float search_angle = 0.0f; // 0 = forward
     float kappa_filtered = 0;
-    float last_valid_angle_deg = 90.0f;
+    float last_valid_angle_deg = 0.0f;
     float last_valid_distance = DESIRED_DISTANCE;
     int frames_without_centroid = 0;
 
@@ -239,8 +250,29 @@ int main() {
             int selected_cluster_size = -1;
             if (best_idx >= 0) {
                 frames_without_centroid = 0;
-                angle_deg = clusters[best_idx].centroid_angle;
-                dist = clusters[best_idx].centroid_distance;
+
+                float angle_c = clusters[best_idx].centroid_angle * M_PI / 180.0f;
+                float angle_p = clusters[best_idx].min_angle * M_PI / 180.0f;
+                float dist_c = clusters[best_idx].centroid_distance;
+                float dist_p = clusters[best_idx].min_distance;
+
+                float xc = cosf(angle_c) * dist_c;
+                float yc = sinf(angle_c) * dist_c;
+                float xp = cosf(angle_p) * dist_p;
+                float yp = sinf(angle_p) * dist_p;
+
+                float dx = xc - xp;
+                float dy = yc - yp;
+                float len = sqrtf(dx * dx + dy * dy);
+                if (len == 0) len = 0.001f;
+
+                float bias_scale = 1.0f;
+                float x_shift = xp + bias_scale * dx;
+                float y_shift = yp + bias_scale * dy;
+
+                dist = sqrtf(x_shift * x_shift + y_shift * y_shift);
+                angle_deg = atan2f(y_shift, x_shift) * 180.0f / M_PI;
+
                 selected_cluster_size = clusters[best_idx].count;
                 last_valid_angle_deg = angle_deg;
                 last_valid_distance = dist;
@@ -250,13 +282,6 @@ int main() {
                 dist = last_valid_distance;
             } else {
                 continue;
-            }
-
-            if (traj_count > 0) {
-                float last_dist = trajectory[traj_count - 1].distance_m;
-                float last_angle = trajectory[traj_count - 1].angle_deg;
-                if (fabsf(dist - last_dist) > MAX_CENTROID_JUMP) continue;
-                if (fabsf(angle_deg - last_angle) > MAX_ANGLE_JUMP) continue;
             }
 
             if (dist < 0.18f) {
@@ -275,7 +300,7 @@ int main() {
             float dt = INTERVAL / 1e6f;
             float v = velocity_cmd;
 
-            float angle_error = angle_deg - 90.0f;
+            float angle_error = angle_deg;
             float angle_err_rad = angle_error * M_PI / 180.0f;
             float kappa_raw = 2.0f * sinf(angle_err_rad) / LOOKAHEAD_DIST;
             kappa_filtered = (fabsf(angle_error) > 10.0f) ?
@@ -287,7 +312,6 @@ int main() {
             char cmd[64];
             snprintf(cmd, sizeof(cmd), "motorcmds %.2f %.2f\n", v_l, v_r);
             send_command(cmd_fd, cmd);
-            
 
             theta_global += ((v_r - v_l) / WHEELBASE) * dt;
             x_global += v * cosf(theta_global) * dt;
@@ -323,7 +347,7 @@ int main() {
                 log_index++;
             }
 
-            float angle_offset = fabsf(angle_deg - 90.0f);
+            float angle_offset = fabsf(angle_deg);
             search_angle = (angle_offset > 10.0f) ?
                            0.7f * search_angle + 0.3f * angle_deg :
                            0.9f * search_angle + 0.1f * angle_deg;
