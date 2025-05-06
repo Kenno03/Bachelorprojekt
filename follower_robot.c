@@ -1,5 +1,5 @@
 // --- Improved LiDAR Follower Program with Geometric Offset Biasing, Fixed Angle Reference, and Centroid Delay ---
-// Author: Markus Kenno Hansen
+// Author: Markus Kenno Hansen (fully merged and uncut)
 
 #include <arpa/inet.h>
 #include <math.h>
@@ -38,6 +38,7 @@ volatile int stop_requested = 0;
 float e[3] = {0}, u[3] = {0};
 float u_log[LOG_SIZE][3], e_log[LOG_SIZE][3];
 float time_log[LOG_SIZE], distance_log[LOG_SIZE], angle_log[LOG_SIZE];
+float x_log[LOG_SIZE], y_log[LOG_SIZE];
 float v_l_log[LOG_SIZE], v_r_log[LOG_SIZE];
 int cluster_size_log[LOG_SIZE];
 int log_index = 0;
@@ -62,6 +63,10 @@ float scan_log[MAX_POINTS];
 float x_global = 0.0f, y_global = 0.0f, theta_global = 0.0f;
 float x_offset = 0.0f, y_offset = 0.0f;
 int offset_initialized = 0;
+
+int centroid_ready_count = 0;
+int centroid_initialized = 0;
+int centroid_lost_warning_printed = 0;
 
 void* input_thread(void* arg) {
     char command[64];
@@ -168,15 +173,28 @@ float control(float ref, float meas) {
 void log_full(const char* filename) {
     FILE* fp = fopen(filename, "w");
     if (!fp) return;
-    fprintf(fp, "Time,Distance,Angle,X_global,Y_global,v_l,v_r,u0,u1,u2,e0,e1,e2,ClusterSize\n");
+    fprintf(fp, "Time,Angle,Distance,Robot_X,Robot_Y,Centroid_X,Centroid_Y,ClusterSize\n");
     for (int i = 0; i < traj_count && i < log_index; i++) {
-        fprintf(fp, "%.2f,%.3f,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d\n",
-            time_log[i], distance_log[i], angle_log[i],
+        fprintf(fp, "%.2f,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f,%d\n",
+            time_log[i], angle_log[i], distance_log[i],
+            x_log[i], y_log[i],
             trajectory[i].x_global, trajectory[i].y_global,
+            cluster_size_log[i]);
+    }
+    fclose(fp);
+}
+
+
+void log_control(const char* filename) {
+    FILE* fp = fopen(filename, "w");
+    if (!fp) return;
+    fprintf(fp, "Time,v_l,v_r,u0,u1,u2,e0,e1,e2\n");
+    for (int i = 0; i < log_index; i++) {
+        fprintf(fp, "%.2f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
+            time_log[i],
             v_l_log[i], v_r_log[i],
             u_log[i][0], u_log[i][1], u_log[i][2],
-            e_log[i][0], e_log[i][1], e_log[i][2],
-            cluster_size_log[i]);
+            e_log[i][0], e_log[i][1], e_log[i][2]);
     }
     fclose(fp);
 }
@@ -250,6 +268,7 @@ int main() {
             int selected_cluster_size = -1;
             if (best_idx >= 0) {
                 frames_without_centroid = 0;
+                centroid_lost_warning_printed = 0;
 
                 float angle_c = clusters[best_idx].centroid_angle * M_PI / 180.0f;
                 float angle_p = clusters[best_idx].min_angle * M_PI / 180.0f;
@@ -266,9 +285,8 @@ int main() {
                 float len = sqrtf(dx * dx + dy * dy);
                 if (len == 0) len = 0.001f;
 
-                float bias_scale = 1.0f;
-                float x_shift = xp + bias_scale * dx;
-                float y_shift = yp + bias_scale * dy;
+                float x_shift = xp + dx;
+                float y_shift = yp + dy;
 
                 dist = sqrtf(x_shift * x_shift + y_shift * y_shift);
                 angle_deg = atan2f(y_shift, x_shift) * 180.0f / M_PI;
@@ -281,7 +299,10 @@ int main() {
                 angle_deg = last_valid_angle_deg;
                 dist = last_valid_distance;
             } else {
-                printf("Centroid lost for more than 5 frames.\n");
+                if (!centroid_lost_warning_printed) {
+                    printf("Centroid lost for more than 5 frames.\n");
+                    centroid_lost_warning_printed = 1;
+                }
                 continue;
             }
 
@@ -290,9 +311,17 @@ int main() {
             float y_local = sinf(angle_rad) * dist;
             float xg = x_global + cosf(theta_global) * x_local - sinf(theta_global) * y_local - x_offset;
             float yg = y_global + sinf(theta_global) * x_local + cosf(theta_global) * y_local - y_offset;
-            
-            
-            // Extra safety: check if any raw scan point in front is dangerously close
+
+            trajectory[traj_count++] = (CentroidLog){ angle_deg, dist, xg, yg };
+
+            if (!centroid_initialized) {
+                centroid_ready_count++;
+                if (centroid_ready_count == 5) {
+                    printf("Centroid initialized. Relative position: x = %.2f m, y = %.2f m\n", xg, yg);
+                    centroid_initialized = 1;
+                } else continue;
+            }
+
             int critical = 0;
             for (int i = 0; i < MAX_POINTS; i++) {
                 float angle = START_ANGLE_DEG + i * ANGLE_RESOLUTION + ROTATION_OFFSET - 90.0f;
@@ -306,9 +335,6 @@ int main() {
                 printf("Emergency stop: obstacle detected ahead within 18 cm\n");
                 continue;
             }
-
-
-            trajectory[traj_count++] = (CentroidLog){ angle_deg, dist, xg, yg };
 
             if (traj_count < TRAJ_DELAY) continue;
             int delayed_index = traj_count - TRAJ_DELAY;
@@ -375,7 +401,8 @@ int main() {
     shutdown(cmd_fd, SHUT_RDWR);
     close(cmd_fd);
     close(laser_fd);
-
     log_full("full_log.csv");
+    log_control("control_log.csv");
+
     return 0;
 }
