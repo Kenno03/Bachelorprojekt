@@ -1,4 +1,4 @@
-// --- Improved LiDAR Follower Program with Geometric Offset Biasing and Fixed Angle Reference ---
+// --- Improved LiDAR Follower Program with Geometric Offset Biasing, Fixed Angle Reference, and Centroid Delay ---
 // Author: Markus Kenno Hansen
 
 #include <arpa/inet.h>
@@ -31,6 +31,7 @@
 #define ROBOT_WIDTH 0.28f
 #define LOG_SIZE 2000
 #define MAX_ANGLE_JUMP 30.0f
+#define TRAJ_DELAY 7
 
 volatile int stop_requested = 0;
 
@@ -136,7 +137,6 @@ int find_clusters(float *distances, Cluster *clusters, int max_clusters) {
             memset(&current, 0, sizeof(Cluster));
             current.min_distance = 9999.0f;
         } else {
-            // Shift angle so 0° = forward
             float a = START_ANGLE_DEG + i * ANGLE_RESOLUTION + ROTATION_OFFSET - 90.0f;
             if (!in_cluster) in_cluster = 1;
             current.total_distance += r;
@@ -197,7 +197,7 @@ int main() {
 
     char buffer[32768] = {0};
     int buffer_len = 0;
-    float search_angle = 0.0f; // 0 = forward
+    float search_angle = 0.0f;
     float kappa_filtered = 0;
     float last_valid_angle_deg = 0.0f;
     float last_valid_distance = DESIRED_DISTANCE;
@@ -246,7 +246,7 @@ int main() {
                 }
             }
 
-            float angle_deg, dist;
+            float angle_deg = 0.0f, dist = DESIRED_DISTANCE;
             int selected_cluster_size = -1;
             if (best_idx >= 0) {
                 frames_without_centroid = 0;
@@ -284,11 +284,25 @@ int main() {
                 continue;
             }
 
+            float angle_rad = angle_deg * M_PI / 180.0f;
+            float x_local = cosf(angle_rad) * dist;
+            float y_local = sinf(angle_rad) * dist;
+            float xg = x_global + cosf(theta_global) * x_local - sinf(theta_global) * y_local - x_offset;
+            float yg = y_global + sinf(theta_global) * x_local + cosf(theta_global) * y_local - y_offset;
+            
+            
             if (dist < 0.18f) {
                 send_command(cmd_fd, "motorcmds 0 0\n");
                 printf("Emergency stop: too close (%.2f m)\n", dist);
                 continue;
             }
+
+            trajectory[traj_count++] = (CentroidLog){ angle_deg, dist, xg, yg };
+
+            if (traj_count < TRAJ_DELAY) continue;
+            int delayed_index = traj_count - TRAJ_DELAY;
+            angle_deg = trajectory[delayed_index].angle_deg;
+            dist = trajectory[delayed_index].distance_m;
 
             float velocity_cmd = control(DESIRED_DISTANCE, dist);
 
@@ -322,14 +336,6 @@ int main() {
                 y_offset = y_global;
                 offset_initialized = 1;
             }
-
-            float angle_rad = angle_deg * M_PI / 180.0f;
-            float x_local = cosf(angle_rad) * dist;
-            float y_local = sinf(angle_rad) * dist;
-            float xg = x_global + cosf(theta_global) * x_local - sinf(theta_global) * y_local - x_offset;
-            float yg = y_global + sinf(theta_global) * x_local + cosf(theta_global) * y_local - y_offset;
-
-            trajectory[traj_count++] = (CentroidLog){ angle_deg, dist, xg, yg };
 
             if (log_index < LOG_SIZE) {
                 time_log[log_index] = elapsed_time;
