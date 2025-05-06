@@ -24,14 +24,14 @@
 #define INTERVAL 100000
 #define MAX_VELOCITY 0.2
 #define DESIRED_DISTANCE 0.2f
-#define SEARCH_ANGLE_MARGIN 25.0f
+#define SEARCH_ANGLE_MARGIN 45.0f
 #define WHEELBASE 0.26f
 #define LOOKAHEAD_DIST 0.8f
 #define MAX_CENTROID_JUMP 0.3f
 #define ROBOT_WIDTH 0.28f
 #define LOG_SIZE 2000
 #define MAX_ANGLE_JUMP 30.0f
-#define TRAJ_DELAY 7
+#define TRAJ_DELAY 5
 
 volatile int stop_requested = 0;
 
@@ -281,6 +281,7 @@ int main() {
                 angle_deg = last_valid_angle_deg;
                 dist = last_valid_distance;
             } else {
+                printf("Centroid lost for more than 5 frames.\n");
                 continue;
             }
 
@@ -291,11 +292,21 @@ int main() {
             float yg = y_global + sinf(theta_global) * x_local + cosf(theta_global) * y_local - y_offset;
             
             
-            if (dist < 0.18f) {
+            // Extra safety: check if any raw scan point in front is dangerously close
+            int critical = 0;
+            for (int i = 0; i < MAX_POINTS; i++) {
+                float angle = START_ANGLE_DEG + i * ANGLE_RESOLUTION + ROTATION_OFFSET - 90.0f;
+                if (fabs(angle) < 10.0f && scan_log[i] > 0.05f && scan_log[i] < 0.18f) {
+                    critical = 1;
+                    break;
+                }
+            }
+            if (critical) {
                 send_command(cmd_fd, "motorcmds 0 0\n");
-                printf("Emergency stop: too close (%.2f m)\n", dist);
+                printf("Emergency stop: obstacle detected ahead within 18 cm\n");
                 continue;
             }
+
 
             trajectory[traj_count++] = (CentroidLog){ angle_deg, dist, xg, yg };
 
