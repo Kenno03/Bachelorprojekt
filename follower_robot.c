@@ -13,7 +13,7 @@
 
 #define ODO_LASER_PORT 24919
 #define CMD_PORT 31001
-#define SERVER_IP "192.38.66.95"
+#define SERVER_IP "192.38.66.95" //smr15
 #define MAX_POINTS 512
 #define ANGLE_RESOLUTION 0.36f
 #define START_ANGLE_DEG -120.0f
@@ -353,7 +353,7 @@ int main() {
         }
         if (critical) {
             send_command(cmd_fd, "motorcmds 0 0\n");
-            //printf("Emergency stop: obstacle detected ahead within 18 cm\n");
+            printf("Emergency stop: obstacle detected ahead within 18 cm\n");
             continue;
         }
 
@@ -413,7 +413,7 @@ int main() {
     shutdown(cmd_fd, SHUT_RDWR);
     close(cmd_fd);
     close(laser_fd);
-    log_full("full_log.csv");
+    log_full("full_log15.csv");
     log_control("control_log.csv");
 
     return 0;
