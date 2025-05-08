@@ -26,6 +26,7 @@
 #define MAX_VELOCITY 0.2  //Magic number is 0.2
 #define SEARCH_ANGLE_MARGIN 45.0f
 #define WHEELBASE 0.26f
+#define MAGIC_NUMBER 0.5f //scaling for PI-Lead
 //#define DESIRED_DISTANCE 0.2f
 //#define LOOKAHEAD_DIST 0.8f
 #define ROBOT_WIDTH 0.28f
@@ -140,11 +141,13 @@ void parse_lidar_bin(char *hex_data, float *distances, int count) {
 
 //Lidar data logic
 int find_clusters(float *distances, Cluster *clusters, int max_clusters) {
+
     //initialize
     const float min_distance = 0.15f, max_distance = 1.0f; //constraints
     int cluster_count = 0, in_cluster = 0;
     Cluster current = {0};
     current.min_distance = 9999.0f;
+
     //loop lidar-scan points
     for (int i = 0; i <= MAX_POINTS; i++) {
         float r = (i < MAX_POINTS) ? distances[i] : 0.0f;
@@ -184,7 +187,7 @@ float control(float ref, float meas) {
     double b[] = {23.0548, -32.0138, 11.0703};
     double a[] = {1.0, -0.3182, -0.6818};
     e[0] = meas - ref;
-    u[0] = 0.5 * (b[0]*e[0] + b[1]*e[1] + b[2]*e[2] - a[1]*u[1] - a[2]*u[2]); //rescaled
+    u[0] = MAGIC_NUMBER * (b[0]*e[0] + b[1]*e[1] + b[2]*e[2] - a[1]*u[1] - a[2]*u[2]); //rescaled
     if (u[0] > MAX_VELOCITY) u[0] = MAX_VELOCITY;
     if (u[0] < 0) u[0] = 0;
     for (int i = 2; i > 0; i--) {
@@ -265,6 +268,7 @@ int main() {
     //initilize time
     struct timeval start_time;
     gettimeofday(&start_time, NULL); 
+
     //Allows for user input at any point
     pthread_t thread_id;
     pthread_create(&thread_id, NULL, input_thread, NULL);
@@ -276,6 +280,7 @@ int main() {
     printf("Servers Started!\n");
     send_command(laser_fd, "scanpush cmd='scanget'\n");
 
+    //initialize values
     char buffer[32768] = {0};
     int buffer_len = 0;
     float search_angle = 0.0f;
@@ -331,10 +336,12 @@ int main() {
         
         //Gets the length of bin
         int block_len = bin_end - bin_start + strlen("</bin>");
+
         //Extract bin block
         char bin_block[16384];
         strncpy(bin_block, bin_start, block_len);
         bin_block[block_len] = '\0';
+
         //Shifting buffer to remove processed data
         size_t shift = (bin_end + strlen("</bin>")) - buffer;
         buffer_len -= shift;
@@ -451,7 +458,7 @@ int main() {
         }
         if (critical) { //emergency stop
             send_command(cmd_fd, "motorcmds 0 0\n");
-            printf("Emergency stop: obstacle detected ahead within 20 cm\n");
+            printf("Emergency stop: obstacle detected ahead within 20 cm\n"); //AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA!!!!
             v_l = 0.0f;
             v_r = 0.0f;
             velocity_cmd = 0.0f;
