@@ -178,8 +178,8 @@ int find_clusters(float *distances, Cluster *clusters, int max_clusters) {
 
         //end if scan is reached
         if (!valid || i == MAX_POINTS) {
-            if (in_cluster && current.count >= 3 && cluster_count < max_clusters) {
-                //cluster has atleast 3 datapoints
+            if (in_cluster && current.count >= 20 && cluster_count < max_clusters) {
+                //cluster has atleast 20 datapoints
                 current.centroid_angle = current.angle_sum / current.count;
                 current.centroid_distance = current.total_distance / current.count;
                 clusters[cluster_count++] = current;
