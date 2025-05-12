@@ -23,7 +23,7 @@
 #define MAX_CLUSTERS 32 //Limits numbers of clusters
 #define MAX_CENTROID_HISTORY 1000 //Centroid memory
 #define INTERVAL 100000 //lidar reading in µs
-#define MAX_VELOCITY 0.4  //Magic number is 0.2
+#define MAX_VELOCITY 0.4 
 #define SEARCH_ANGLE_MARGIN 45.0f
 #define WHEELBASE 0.26f
 #define MAGIC_NUMBER 0.3f //scaling for PI-Lead
@@ -580,7 +580,7 @@ int main() {
         float angle_error = angle_deg;
         float angle_err_rad = angle_error * M_PI / 180.0f;
         float kappa_raw = 2.0f * sinf(angle_err_rad) / LOOKAHEAD_DIST;
-        kappa_filtered = (fabsf(angle_error) > 10.0f) ? kappa_raw : 0.7f * kappa_filtered + 0.3f * kappa_raw; //Low-pass filter (smooths)
+        kappa_filtered = (fabsf(angle_error) > 10.0f) ? kappa_raw : 0.5f * kappa_filtered + 0.5f * kappa_raw; //Low-pass filter (smooths)
 
         //Wheel velocity
         float v_l = v * (1.0f - kappa_filtered * WHEELBASE / 2.0f);
