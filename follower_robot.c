@@ -23,12 +23,12 @@
 #define MAX_CLUSTERS 32 //Limits numbers of clusters
 #define MAX_CENTROID_HISTORY 1000 //Centroid memory
 #define INTERVAL 100000 //lidar reading in µs
-#define MAX_VELOCITY 0.2  //Magic number is 0.2
+#define MAX_VELOCITY 0.4  //Magic number is 0.2
 #define SEARCH_ANGLE_MARGIN 45.0f
 #define WHEELBASE 0.26f
-#define MAGIC_NUMBER 0.5f //scaling for PI-Lead
-//#define DESIRED_DISTANCE 0.2f
-//#define LOOKAHEAD_DIST 0.8f
+#define MAGIC_NUMBER 0.3f //scaling for PI-Lead
+#define DESIRED_DISTANCE 0.25f
+#define LOOKAHEAD_DIST 0.8f
 #define ROBOT_WIDTH 0.28f
 #define LOG_SIZE 2000
 #define TRAJ_DELAY 5 //delays respons to previous data points
@@ -44,6 +44,12 @@ float v_l_log[LOG_SIZE], v_r_log[LOG_SIZE];
 int cluster_size_log[LOG_SIZE];
 float heading_log[LOG_SIZE];
 int log_index = 0;
+
+int initial_position_logged = 0;  // flag to ensure it's only printed once
+float initial_robot_x = 0.0f, initial_robot_y = 0.0f, initial_robot_theta = 0.0f;
+float initial_centroid_x = 0.0f, initial_centroid_y = 0.0f;
+int critical_stop_active = 0;  // Persistent flag for emergency stop
+
 
 //Data structs
 typedef struct {
@@ -260,11 +266,12 @@ float get_elapsed_time(struct timeval start_time) {
 
 int main() {
     //Based on max_velocity
+    /*
     float DESIRED_DISTANCE = 0.2f + fmaxf(0.0f, MAX_VELOCITY - 0.2f) * 1.0f;
     float LOOKAHEAD_DIST   = 0.8f + fmaxf(0.0f, MAX_VELOCITY - 0.2f) * 1.0f;    
     printf("Using LOOKAHEAD_DIST = %.2f meters\n", LOOKAHEAD_DIST);
     printf("Using DESIRED_DISTANCE = %.2f meters\n", DESIRED_DISTANCE);
-
+    */
     //initilize time
     struct timeval start_time;
     gettimeofday(&start_time, NULL); 
@@ -273,10 +280,19 @@ int main() {
     pthread_t thread_id;
     pthread_create(&thread_id, NULL, input_thread, NULL);
     
-    //Server setup
+    // Server setup
     int laser_fd = setup_client(ODO_LASER_PORT);
+    if (laser_fd == -1) {
+        printf("Could not connect to ODO_LASER_PORT (%d)\n", ODO_LASER_PORT);
+        return -1;
+    }
+
     int cmd_fd = setup_client(CMD_PORT);
-    if (laser_fd == -1 || cmd_fd == -1) return -1;
+    if (cmd_fd == -1) {
+        printf("Could not connect to CMD_PORT (%d)\n", CMD_PORT);
+        return -1;
+    }
+
     printf("Servers Started!\n");
     send_command(laser_fd, "scanpush cmd='scanget'\n");
 
@@ -445,28 +461,52 @@ int main() {
         //global coordinates
         float xg = x_global + cosf(theta_global) * x_local - sinf(theta_global) * y_local;
         float yg = y_global + sinf(theta_global) * x_local + cosf(theta_global) * y_local;
+
         trajectory[traj_count++] = (CentroidLog){ angle_deg, dist, xg, yg };
 
+        //Sends initial data to terminal
+        if (!initial_position_logged) {
+            initial_robot_x = x_global;
+            initial_robot_y = y_global;
+            initial_robot_theta = theta_global * 180.0f / M_PI;
+        
+            initial_centroid_x = xg;
+            initial_centroid_y = yg;
+        
+            printf("Initial Robot Pose: x=%.3f, y=%.3f, theta=%.2f deg\n", initial_robot_x, initial_robot_y, initial_robot_theta);
+            printf("Initial Centroid Pos: x=%.3f, y=%.3f\n", initial_centroid_x, initial_centroid_y);
+        
+            initial_position_logged = 1;
+        }
 
-        int critical = 0; //for near collision
-        for (int i = 0; i < MAX_POINTS; i++) { //checks if anything is in front
+        // --- Persistent emergency stop logic ---
+        int critical_now = 0;
+        for (int i = 0; i < MAX_POINTS; i++) {
             float angle = START_ANGLE_DEG + i * ANGLE_RESOLUTION + ROTATION_OFFSET - 90.0f;
             if (fabs(angle) < 10.0f && scan_log[i] > 0.05f && scan_log[i] < 0.20f) {
-                critical = 1;
+                critical_now = 1;
                 break;
             }
         }
-        if (critical) { //emergency stop
-            send_command(cmd_fd, "motorcmds 0 0\n");
-            printf("Emergency stop: obstacle detected ahead within 20 cm\n"); //AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA!!!!
-            v_l = 0.0f;
-            v_r = 0.0f;
-            velocity_cmd = 0.0f;
-            for (int i  = 0; i < 3; i++){
-                u[i] = 0;
-                e[i] = 0;
+
+        if (critical_now) {
+            if (!critical_stop_active) {
+                send_command(cmd_fd, "motorcmds 0 0\n");
+                float elapsed_time = get_elapsed_time(start_time);
+                printf("[%.2fs] Emergency stop: obstacle within 20 cm at pose x=%.2f y=%.2f heading=%.2f°\n",
+                    elapsed_time, x_global, y_global, theta_global * 180.0f / M_PI);
+                for (int i = 0; i < 3; i++) { u[i] = 0; e[i] = 0; }
             }
+            critical_stop_active = 1;
+            float elapsed_time = get_elapsed_time(start_time);
+            log_data(elapsed_time, -1, -1, 0, 0, 0.0f, -1, x_global, y_global, theta_global * 180.0f / M_PI);
+            continue;
+        } else if (critical_stop_active) {
+            // Scan is now clear, so exit stop state
+            printf("[%.2fs] Obstacle cleared, resuming.\n", get_elapsed_time(start_time));
+            critical_stop_active = 0;
         }
+
 
         //waits for enough data points to act
         if (traj_count < TRAJ_DELAY) continue;
