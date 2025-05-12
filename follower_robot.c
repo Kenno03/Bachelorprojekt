@@ -44,6 +44,14 @@ float v_l_log[LOG_SIZE], v_r_log[LOG_SIZE];
 int cluster_size_log[LOG_SIZE];
 float heading_log[LOG_SIZE];
 int log_index = 0;
+float raw_x_log[LOG_SIZE];
+float raw_y_log[LOG_SIZE];
+float raw_heading_log[LOG_SIZE];
+float raw_angle_log[LOG_SIZE];
+float raw_distance_log[LOG_SIZE];
+float raw_centroid_x[LOG_SIZE];
+float raw_centroid_y[LOG_SIZE];
+
 
 int initial_position_logged = 0;  // flag to ensure it's only printed once
 float initial_robot_x = 0.0f, initial_robot_y = 0.0f, initial_robot_theta = 0.0f;
@@ -86,6 +94,15 @@ void* input_thread(void* arg) {
         }
     }
     return NULL;
+}
+
+//Gets SMR number
+int get_robot_id_from_ip(const char* ip) {
+    int a, b, c, d;
+    if (sscanf(ip, "%d.%d.%d.%d", &a, &b, &c, &d) == 4) {
+        return d - 80;  // since 192.38.66.80 + X
+    }
+    return -1;  // fallback/error
 }
 
 //Client setup
@@ -207,16 +224,42 @@ float control(float ref, float meas) {
 void log_full(const char* filename) {
     FILE* fp = fopen(filename, "w");
     if (!fp) return;
+
     fprintf(fp, "Time,Angle,Distance,Robot_X,Robot_Y,Robot_Heading_deg,Centroid_X,Centroid_Y,ClusterSize,Velocity_cmd\n");
-    for (int i = 0; i < traj_count && i < log_index; i++) {
+
+    float x0 = raw_x_log[0];
+    float y0 = raw_y_log[0];
+    float theta0 = raw_heading_log[0];
+
+    for (int i = 0; i < log_index; i++) {
+        // Relative pose (robot)
+        float dx = raw_x_log[i] - x0;
+        float dy = raw_y_log[i] - y0;
+        float dtheta = raw_heading_log[i] - theta0;
+
+        // Rotate centroid from local to global
+        float xc = raw_centroid_x[i];
+        float yc = raw_centroid_y[i];
+        float xg = dx + cosf(dtheta) * xc - sinf(dtheta) * yc;
+        float yg = dy + sinf(dtheta) * xc + cosf(dtheta) * yc;
+
+        // Store converted robot pose for plotting/debugging
+        x_log[i] = dx;
+        y_log[i] = dy;
+        heading_log[i] = dtheta * 180.0f / M_PI;
+
         fprintf(fp, "%.2f,%.2f,%.3f,%.3f,%.3f,%.2f,%.3f,%.3f,%d,%.3f\n",
-            time_log[i], angle_log[i], distance_log[i],
+            time_log[i],
+            angle_log[i], distance_log[i],
             x_log[i], y_log[i], heading_log[i],
-            trajectory[i].x_global, trajectory[i].y_global,
-            cluster_size_log[i], u_log[i][0]);    
+            xg, yg,
+            cluster_size_log[i],
+            u_log[i][0]);
     }
+
     fclose(fp);
 }
+
 
 void log_control(const char* filename) {
     FILE* fp = fopen(filename, "w");
@@ -234,27 +277,36 @@ void log_control(const char* filename) {
 
 void log_data(float elapsed_time, float angle, float distance,
     float v_l, float v_r, float velocity_cmd,
-    int cluster_size, float x, float y, float heading_deg){
-if (log_index >= LOG_SIZE) return;
+    int cluster_size, float x, float y, float heading_deg)
+{
+    if (log_index >= LOG_SIZE) return;
 
-time_log[log_index] = elapsed_time;
-angle_log[log_index] = angle;
-distance_log[log_index] = distance;
-v_l_log[log_index] = v_l;
-v_r_log[log_index] = v_r;
-u_log[log_index][0] = u[0];
-u_log[log_index][1] = u[1];
-u_log[log_index][2] = u[2];
-e_log[log_index][0] = e[0];
-e_log[log_index][1] = e[1];
-e_log[log_index][2] = e[2];
-x_log[log_index] = x;
-y_log[log_index] = y;
-heading_log[log_index] = heading_deg;
-cluster_size_log[log_index] = cluster_size;
+    time_log[log_index] = elapsed_time;
+    angle_log[log_index] = angle;
+    distance_log[log_index] = distance;
+    v_l_log[log_index] = v_l;
+    v_r_log[log_index] = v_r;
+    u_log[log_index][0] = u[0];
+    u_log[log_index][1] = u[1];
+    u_log[log_index][2] = u[2];
+    e_log[log_index][0] = e[0];
+    e_log[log_index][1] = e[1];
+    e_log[log_index][2] = e[2];
 
-log_index++;
+    raw_x_log[log_index] = x;  // raw robot pose
+    raw_y_log[log_index] = y;
+    raw_heading_log[log_index] = heading_deg * M_PI / 180.0f;
+
+    raw_angle_log[log_index] = angle;  // for centroid reconstruction
+    raw_distance_log[log_index] = distance;
+    raw_centroid_x[log_index] = cosf(angle * M_PI / 180.0f) * distance;
+    raw_centroid_y[log_index] = sinf(angle * M_PI / 180.0f) * distance;
+
+    cluster_size_log[log_index] = cluster_size;
+
+    log_index++;
 }
+
 //Time
 float get_elapsed_time(struct timeval start_time) {
     struct timeval current_time;
@@ -271,7 +323,8 @@ int main() {
     float LOOKAHEAD_DIST   = 0.8f + fmaxf(0.0f, MAX_VELOCITY - 0.2f) * 1.0f;    
     printf("Using LOOKAHEAD_DIST = %.2f meters\n", LOOKAHEAD_DIST);
     printf("Using DESIRED_DISTANCE = %.2f meters\n", DESIRED_DISTANCE);
-    */
+    */ 
+
     //initilize time
     struct timeval start_time;
     gettimeofday(&start_time, NULL); 
@@ -475,7 +528,10 @@ int main() {
         
             printf("Initial Robot Pose: x=%.3f, y=%.3f, theta=%.2f deg\n", initial_robot_x, initial_robot_y, initial_robot_theta);
             printf("Initial Centroid Pos: x=%.3f, y=%.3f\n", initial_centroid_x, initial_centroid_y);
-        
+            int smr_id = get_robot_id_from_ip(SERVER_IP);
+                if (smr_id >= 0)
+                    printf("SMR %d is Ready!\n", smr_id);
+
             initial_position_logged = 1;
         }
 
@@ -551,7 +607,14 @@ int main() {
     shutdown(cmd_fd, SHUT_RDWR);
     close(cmd_fd);
     close(laser_fd);
-    log_full("full_log15.csv");
-    log_control("control_log.csv");
-    return 0;
+    // Logging and final status
+    int robot_id = get_robot_id_from_ip(SERVER_IP);
+    char log_file[64], control_file[64];
+    snprintf(log_file, sizeof(log_file), "full_log%d.csv", robot_id);
+    snprintf(control_file, sizeof(control_file), "control_log%d.csv", robot_id);
+
+    printf("Saving to %s and %s\n", log_file, control_file);
+
+    log_full(log_file);
+    log_control(control_file);
 }
