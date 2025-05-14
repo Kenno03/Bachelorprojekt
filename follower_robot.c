@@ -483,14 +483,21 @@ int main() {
 
             //checks if n frames without centroids
         } else if (frames_without_centroid < 5) {
-            //use previous data
+            // use and log previous centroid
             frames_without_centroid++;
             angle_deg = last_valid_angle_deg;
             dist = last_valid_distance;
-        } else {
+        
+            float elapsed_time = get_elapsed_time(start_time);
+            log_data(elapsed_time, angle_deg, dist, v_l, v_r, velocity_cmd,
+                     -1, x_global, y_global, theta_global * 180.0f / M_PI);    
+        }
+         else {
             //centroids lost
             if (!centroid_lost_warning_printed) {
-                printf("Centroid lost for more than 5 frames.\n");
+                float elapsed_time = get_elapsed_time(start_time);
+                printf("[%.2fs] Centroid lost for more than 5 frames.\n", elapsed_time);
+
                 centroid_lost_warning_printed = 1;
             }
             if (log_index < LOG_SIZE) { //logs values
@@ -539,7 +546,7 @@ int main() {
         int critical_now = 0;
         for (int i = 0; i < MAX_POINTS; i++) {
             float angle = START_ANGLE_DEG + i * ANGLE_RESOLUTION + ROTATION_OFFSET - 90.0f;
-            if (fabs(angle) < 10.0f && scan_log[i] > 0.05f && scan_log[i] < 0.20f) {
+            if (fabs(angle) < 10.0f && scan_log[i] > 0.05f && scan_log[i] < 0.15f) {
                 critical_now = 1;
                 break;
             }
@@ -549,7 +556,7 @@ int main() {
             if (!critical_stop_active) {
                 send_command(cmd_fd, "motorcmds 0 0\n");
                 float elapsed_time = get_elapsed_time(start_time);
-                printf("[%.2fs] Emergency stop: obstacle within 20 cm at pose x=%.2f y=%.2f heading=%.2f°\n",
+                printf("[%.2fs] Emergency stop: obstacle within 15 cm at pose x=%.2f y=%.2f heading=%.2f°\n",
                     elapsed_time, x_global, y_global, theta_global * 180.0f / M_PI);
                 for (int i = 0; i < 3; i++) { u[i] = 0; e[i] = 0; }
             }
@@ -562,7 +569,6 @@ int main() {
             printf("[%.2fs] Obstacle cleared, resuming.\n", get_elapsed_time(start_time));
             critical_stop_active = 0;
         }
-
 
         //waits for enough data points to act
         if (traj_count < TRAJ_DELAY) continue;
@@ -580,7 +586,7 @@ int main() {
         float angle_error = angle_deg;
         float angle_err_rad = angle_error * M_PI / 180.0f;
         float kappa_raw = 2.0f * sinf(angle_err_rad) / LOOKAHEAD_DIST;
-        kappa_filtered = (fabsf(angle_error) > 10.0f) ? kappa_raw : 0.5f * kappa_filtered + 0.5f * kappa_raw; //Low-pass filter (smooths)
+        kappa_filtered = (fabsf(angle_error) > 15.0f) ? kappa_raw : 0.7f * kappa_filtered + 0.3f * kappa_raw; //Low-pass filter (smooths)
 
         //Wheel velocity
         float v_l = v * (1.0f - kappa_filtered * WHEELBASE / 2.0f);
