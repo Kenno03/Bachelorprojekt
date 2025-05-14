@@ -83,6 +83,8 @@ int offset_initialized = 0;
 int centroid_lost_warning_printed = 0;
 
 
+
+
 //handles terminal stop
 void* input_thread(void* arg) {
     char command[64];
@@ -375,6 +377,7 @@ int main() {
         if (!(bin_start && bin_end && bin_end > bin_start)) {
             //if no "bin" skip
             float elapsed_time = get_elapsed_time(start_time);
+            printf("[%.2fs] Bin logging fuckery\n", elapsed_time);
             log_data(elapsed_time, -1, -1, 0, 0, 0.0f, -1, x_global, y_global, theta_global * 180.0f / M_PI);
             continue;
 
@@ -487,7 +490,7 @@ int main() {
             frames_without_centroid++;
             angle_deg = last_valid_angle_deg;
             dist = last_valid_distance;
-        
+            printf("Lost Centroid \n");
             float elapsed_time = get_elapsed_time(start_time);
             log_data(elapsed_time, angle_deg, dist, v_l, v_r, velocity_cmd,
                      -1, x_global, y_global, theta_global * 180.0f / M_PI);    
@@ -508,7 +511,6 @@ int main() {
                 x_log[log_index] = x_global;
                 y_log[log_index] = y_global;
                 cluster_size_log[log_index] = -1;
-        
                 log_index++;
             }
             continue;
@@ -518,9 +520,9 @@ int main() {
         float angle_rad = angle_deg * M_PI / 180.0f;
         float x_local = cosf(angle_rad) * dist;
         float y_local = sinf(angle_rad) * dist;
-        //global coordinates
-        float xg = x_global + cosf(theta_global) * x_local - sinf(theta_global) * y_local;
-        float yg = y_global + sinf(theta_global) * x_local + cosf(theta_global) * y_local;
+        // transform from LIDAR frame → robot frame → world frame
+        float xg = x_global + cos(theta_global) * x_local - sin(theta_global) * y_local;
+        float yg = y_global + sin(theta_global) * x_local + cos(theta_global) * y_local;        
 
         trajectory[traj_count++] = (CentroidLog){ angle_deg, dist, xg, yg };
 
@@ -562,6 +564,7 @@ int main() {
             }
             critical_stop_active = 1;
             float elapsed_time = get_elapsed_time(start_time);
+            printf("Critical logging fuckery \n");
             log_data(elapsed_time, -1, -1, 0, 0, 0.0f, -1, x_global, y_global, theta_global * 180.0f / M_PI);
             continue;
         } else if (critical_stop_active) {
