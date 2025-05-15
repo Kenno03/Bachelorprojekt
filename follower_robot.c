@@ -23,7 +23,7 @@
 #define MAX_CENTROID_HISTORY 1000 //Centroid memory
 #define INTERVAL 100000 //lidar reading in µs
 #define MAX_VELOCITY 0.4 
-#define SEARCH_ANGLE_MARGIN 45.0f
+#define SEARCH_ANGLE_MARGIN 50.0f
 #define WHEELBASE 0.26f
 #define MAGIC_NUMBER 0.3f //scaling for PI-Lead
 #define DESIRED_DISTANCE 0.25f
@@ -350,6 +350,8 @@ int main() {
     float v_r = 0.0f;
     float velocity_cmd = 0.0f;
     int pose_reset_detected = 0;
+    static float last_theta_global = 0.0f;
+
 
     
     static int printed_wait_message = 0; //for bin detection
@@ -372,7 +374,7 @@ int main() {
         if (!(bin_start && bin_end && bin_end > bin_start)) {
             if (!printed_wait_message) {
                 float elapsed_time = get_elapsed_time(start_time);
-                printf("[%.2fs] Waiting for complete <bin> block...\n", elapsed_time);
+               // printf("[%.2fs] Waiting for complete <bin> block...\n", elapsed_time); //debugging
                 printed_wait_message = 1;
             }
             continue;
@@ -486,6 +488,13 @@ int main() {
             frames_without_centroid++;
             angle_deg = last_valid_angle_deg;
             dist = last_valid_distance;
+
+            //compensate for rotation while centroid is lost
+            float delta_theta = theta_global - last_theta_global;
+            angle_deg -= delta_theta * 180.0f / M_PI;
+            search_angle -= delta_theta * 180.0f / M_PI;
+            last_theta_global = theta_global;
+
             float elapsed_time = get_elapsed_time(start_time);
             printf("[%.2fs] Lost Centroid\n", elapsed_time);
             log_data(elapsed_time, angle_deg, dist, v_l, v_r, velocity_cmd,
