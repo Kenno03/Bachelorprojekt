@@ -389,21 +389,6 @@ int main() {
         y_global = atof(pose_y);
         theta_global = atof(pose_h);
 
-        //printf("[POSE] x=%.3f y=%.3f h=%.3f deg\n", x_global, y_global, theta_global * 180.0f / M_PI); //Debugging
-
-                // Wait until robot pose is reset to (0, 0, 0)
-        if (!pose_reset_detected) {
-            if (fabs(x_global) < 0.1f && fabs(y_global) < 0.1f && fabs(theta_global) < 0.1f) {
-                pose_reset_detected = 1;
-                printf("[INIT] Pose reset detected. System is now active.\n");
-            } else {
-                // Skip processing this frame
-                send_command(cmd_fd, "$odoth\n");
-                usleep(100000);  // Wait a bit (100 ms) to let the movement happen
-                continue;
-            }
-        }
-
         //Gets the length of bin
         int block_len = bin_end - bin_start + strlen("</bin>");
 
@@ -417,6 +402,19 @@ int main() {
         memmove(buffer, buffer + shift, buffer_len);
         buffer[buffer_len] = '\0';
         printed_wait_message = 0;
+        //printf("[POSE] x=%.3f y=%.3f h=%.3f deg\n", x_global, y_global, theta_global * 180.0f / M_PI); //Debugging
+
+        // Wait until robot pose is reset to (0, 0, 0)
+        if (!pose_reset_detected) {
+            if (fabs(x_global) < 0.1f && fabs(y_global) < 0.1f && fabs(theta_global) < 0.1f) {
+                pose_reset_detected = 1;
+                printf("[INIT] Pose reset detected. System is now active.\n");
+                    } 
+                    else {
+                        // Skip processing this frame
+                        continue;
+                    }
+                }
 
         //extracting pasring lidar data
         char* hex_data = extract_bin_data(bin_block);
