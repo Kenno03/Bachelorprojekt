@@ -10,7 +10,6 @@
 #include <unistd.h>
 #include <sys/time.h>
 
-
 //constants
 #define ODO_LASER_PORT 24919    //ulmsserver
 #define CMD_PORT 31001  //mrc 3100x -tx
@@ -78,11 +77,7 @@ int traj_count = 0;
 float scan_log[MAX_POINTS]; 
 //global position
 float x_global = 0.0f, y_global = 0.0f, theta_global = 0.0f;
-float x_offset = 0.0f, y_offset = 0.0f, theta_offset = 0.0f;
-int offset_initialized = 0;
 int centroid_lost_warning_printed = 0;
-
-
 
 
 //handles terminal stop
@@ -319,14 +314,6 @@ float get_elapsed_time(struct timeval start_time) {
 
 
 int main() {
-    //Based on max_velocity
-    /*
-    float DESIRED_DISTANCE = 0.2f + fmaxf(0.0f, MAX_VELOCITY - 0.2f) * 1.0f;
-    float LOOKAHEAD_DIST   = 0.8f + fmaxf(0.0f, MAX_VELOCITY - 0.2f) * 1.0f;    
-    printf("Using LOOKAHEAD_DIST = %.2f meters\n", LOOKAHEAD_DIST);
-    printf("Using DESIRED_DISTANCE = %.2f meters\n", DESIRED_DISTANCE);
-    */ 
-
     //initilize time
     struct timeval start_time;
     gettimeofday(&start_time, NULL); 
@@ -362,26 +349,36 @@ int main() {
     float v_l = 0.0f;
     float v_r = 0.0f;
     float velocity_cmd = 0.0f;
+    int pose_reset_detected = 0;
 
+    
+    static int printed_wait_message = 0; //for bin detection
     //if no "stop" in terminal
     while (!stop_requested) {
-        // reads laser data and stores it
         int bytes = read(laser_fd, buffer + buffer_len, sizeof(buffer) - buffer_len - 1);
-        if (bytes <= 0) { usleep(10000); continue; }
+        if (bytes <= 0) {
+            usleep(10000);
+            continue;
+        }
+    
         buffer_len += bytes;
         buffer[buffer_len] = '\0';
-
-        //extracts the "bin" strings
+    
+        // Look for a complete <bin> block
         char* bin_start = strstr(buffer, "<bin");
         char* bin_end = strstr(buffer, "</bin>");
+    
+        // If no full bin block, wait for more data
         if (!(bin_start && bin_end && bin_end > bin_start)) {
-            //if no "bin" skip
-            float elapsed_time = get_elapsed_time(start_time);
-            printf("[%.2fs] Bin logging fuckery\n", elapsed_time);
-            log_data(elapsed_time, -1, -1, 0, 0, 0.0f, -1, x_global, y_global, theta_global * 180.0f / M_PI);
+            if (!printed_wait_message) {
+                float elapsed_time = get_elapsed_time(start_time);
+                printf("[%.2fs] Waiting for complete <bin> block...\n", elapsed_time);
+                printed_wait_message = 1;
+            }
             continue;
+        }
 
-        };
+        size_t shift = (bin_end + strlen("</bin>")) - buffer;    // Calculate how many bytes to shift out
     
         // Extract global robot pose and converts from string floats
         char pose_x[32], pose_y[32], pose_h[32];
@@ -391,21 +388,22 @@ int main() {
         x_global = atof(pose_x);
         y_global = atof(pose_y);
         theta_global = atof(pose_h);
-        
-        //sets offsets
-        if (!offset_initialized) {
-            x_offset = x_global;
-            y_offset = y_global;
-            theta_offset = theta_global;
-            offset_initialized = 1;
-        }
-        //apply offsets
-        x_global -= x_offset;
-        y_global -= y_offset;
-        theta_global -= theta_offset;
-        
+
         //printf("[POSE] x=%.3f y=%.3f h=%.3f deg\n", x_global, y_global, theta_global * 180.0f / M_PI); //Debugging
-        
+
+                // Wait until robot pose is reset to (0, 0, 0)
+        if (!pose_reset_detected) {
+            if (fabs(x_global) < 0.1f && fabs(y_global) < 0.1f && fabs(theta_global) < 0.1f) {
+                pose_reset_detected = 1;
+                printf("[INIT] Pose reset detected. System is now active.\n");
+            } else {
+                // Skip processing this frame
+                send_command(cmd_fd, "$odoth\n");
+                usleep(100000);  // Wait a bit (100 ms) to let the movement happen
+                continue;
+            }
+        }
+
         //Gets the length of bin
         int block_len = bin_end - bin_start + strlen("</bin>");
 
@@ -414,11 +412,11 @@ int main() {
         strncpy(bin_block, bin_start, block_len);
         bin_block[block_len] = '\0';
 
-        //Shifting buffer to remove processed data
-        size_t shift = (bin_end + strlen("</bin>")) - buffer;
+        //Shifting buffer to remove processed data and Reset message flag whenfull bin is available
         buffer_len -= shift;
         memmove(buffer, buffer + shift, buffer_len);
         buffer[buffer_len] = '\0';
+        printed_wait_message = 0;
 
         //extracting pasring lidar data
         char* hex_data = extract_bin_data(bin_block);
@@ -490,8 +488,8 @@ int main() {
             frames_without_centroid++;
             angle_deg = last_valid_angle_deg;
             dist = last_valid_distance;
-            printf("Lost Centroid \n");
             float elapsed_time = get_elapsed_time(start_time);
+            printf("[%.2fs] Lost Centroid\n", elapsed_time);
             log_data(elapsed_time, angle_deg, dist, v_l, v_r, velocity_cmd,
                      -1, x_global, y_global, theta_global * 180.0f / M_PI);    
         }
@@ -517,12 +515,17 @@ int main() {
         }
 
         //centroids calculations
-        float angle_rad = angle_deg * M_PI / 180.0f;
+        float angle_rad = (angle_deg + 90.0f) * M_PI / 180.0f;
         float x_local = cosf(angle_rad) * dist;
-        float y_local = sinf(angle_rad) * dist;
+        float y_local = -sinf(angle_rad) * dist;
+
         // transform from LIDAR frame → robot frame → world frame
-        float xg = x_global + cos(theta_global) * x_local - sin(theta_global) * y_local;
-        float yg = y_global + sin(theta_global) * x_local + cos(theta_global) * y_local;        
+        y_local = -y_local;
+        float xg = x_global + cosf(theta_global) * x_local - sinf(theta_global) * y_local;
+        float yg = y_global + sinf(theta_global) * x_local + cosf(theta_global) * y_local; 
+        
+        float elapsed_time = get_elapsed_time(start_time);
+        //printf("[%.2fs] Robot=(%.2f, %.2f) θ=%.2f° | Centroid=(%.2f, %.2f)\n", elapsed_time, x_global, y_global, theta_global * 180.0f / M_PI, xg, yg); //Debugging
 
         trajectory[traj_count++] = (CentroidLog){ angle_deg, dist, xg, yg };
 
@@ -564,8 +567,9 @@ int main() {
             }
             critical_stop_active = 1;
             float elapsed_time = get_elapsed_time(start_time);
-            printf("Critical logging fuckery \n");
-            log_data(elapsed_time, -1, -1, 0, 0, 0.0f, -1, x_global, y_global, theta_global * 180.0f / M_PI);
+            printf("[%.2fs] Logging for critical stop.\n", elapsed_time);
+            log_data(elapsed_time, last_valid_angle_deg, last_valid_distance, 0, 0, 0.0f,
+                selected_cluster_size, x_global, y_global, theta_global * 180.0f / M_PI);  
             continue;
         } else if (critical_stop_active) {
             // Scan is now clear, so exit stop state
@@ -581,7 +585,6 @@ int main() {
 
         //velocity command setup
         float velocity_cmd = control(DESIRED_DISTANCE, dist);
-        float elapsed_time = get_elapsed_time(start_time);
         float dt = INTERVAL / 1e6f;
         float v = velocity_cmd;
 
