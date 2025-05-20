@@ -207,7 +207,7 @@ float control(float ref, float meas) {
     double b[] = {23.0548, -32.0138, 11.0703};
     double a[] = {1.0, -0.3182, -0.6818};
     e[0] = meas - ref;
-    u[0] = MAGIC_NUMBER * (b[0]*e[0] + b[1]*e[1] + b[2]*e[2] - a[1]*u[1] - a[2]*u[2]); //rescaled
+    u[0] = MAGIC_NUMBER * (b[0]*e[0] + b[1]*e[1] + b[2]*e[2]) - a[1]*u[1] - a[2]*u[2]; //rescaled
     if (u[0] > MAX_VELOCITY) u[0] = MAX_VELOCITY;
     if (u[0] < 0) u[0] = 0;
     for (int i = 2; i > 0; i--) {
