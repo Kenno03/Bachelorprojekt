@@ -12,8 +12,8 @@
 
 //constants
 #define ODO_LASER_PORT 24919    //ulmsserver
-#define CMD_PORT 31001  //mrc 31003 -tx
-#define SERVER_IP "192.38.66.95" //ip "192.38.66.80+X", X = smrX
+#define CMD_PORT 31008  //mrc 31003 -tx
+#define SERVER_IP "192.38.66.88" //ip "192.38.66.80+X", X = smrX
 #define MAX_POINTS 512  //Lidar numbers
 #define ANGLE_RESOLUTION 0.36f //lidar resolution angle
 #define START_ANGLE_DEG -120.0f
