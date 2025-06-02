@@ -12,7 +12,7 @@
 
 //constants
 #define ODO_LASER_PORT 24919    //ulmsserver
-#define CMD_PORT 31001  //mrc 3100x -tx
+#define CMD_PORT 31001  //mrc 31003 -tx
 #define SERVER_IP "192.38.66.95" //ip "192.38.66.80+X", X = smrX
 #define MAX_POINTS 512  //Lidar numbers
 #define ANGLE_RESOLUTION 0.36f //lidar resolution angle
@@ -37,7 +37,7 @@ volatile int stop_requested = 0; //stop command
 //log initialize
 float e[3] = {0}, u[3] = {0};
 float u_log[LOG_SIZE][3], e_log[LOG_SIZE][3];
-float time_log[LOG_SIZE], distance_log[LOG_SIZE], angle_log[LOG_SIZE];
+double time_log[LOG_SIZE], distance_log[LOG_SIZE], angle_log[LOG_SIZE];
 float x_log[LOG_SIZE], y_log[LOG_SIZE];
 float v_l_log[LOG_SIZE], v_r_log[LOG_SIZE];
 int cluster_size_log[LOG_SIZE];
@@ -207,7 +207,7 @@ float control(float ref, float meas) {
     double b[] = {23.0548, -32.0138, 11.0703};
     double a[] = {1.0, -0.3182, -0.6818};
     e[0] = meas - ref;
-    u[0] = MAGIC_NUMBER * (b[0]*e[0] + b[1]*e[1] + b[2]*e[2]) - a[1]*u[1] - a[2]*u[2]; //rescaled
+    u[0] = MAGIC_NUMBER * (b[0]*e[0] + b[1]*e[1] + b[2]*e[2] - a[1]*u[1] - a[2]*u[2]); //rescaled
     if (u[0] > MAX_VELOCITY) u[0] = MAX_VELOCITY;
     if (u[0] < 0) u[0] = 0;
     for (int i = 2; i > 0; i--) {
@@ -245,7 +245,7 @@ void log_full(const char* filename) {
         y_log[i] = dy;
         heading_log[i] = dtheta * 180.0f / M_PI;
 
-        fprintf(fp, "%.2f,%.2f,%.3f,%.3f,%.3f,%.2f,%.3f,%.3f,%d,%.3f\n",
+        fprintf(fp, "%.10f,%.2f,%.3f,%.3f,%.3f,%.2f,%.3f,%.3f,%d,%.3f\n",
             time_log[i],
             angle_log[i], distance_log[i],
             x_log[i], y_log[i], heading_log[i],
@@ -263,7 +263,7 @@ void log_control(const char* filename) {
     if (!fp) return;
     fprintf(fp, "Time,v_l,v_r,u0,u1,u2,e0,e1,e2\n");
     for (int i = 0; i < log_index; i++) {
-        fprintf(fp, "%.2f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
+        fprintf(fp, "%.10f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
             time_log[i],
             v_l_log[i], v_r_log[i],
             u_log[i][0], u_log[i][1], u_log[i][2],
@@ -272,7 +272,7 @@ void log_control(const char* filename) {
     fclose(fp);
 }
 
-void log_data(float elapsed_time, float angle, float distance,
+void log_data(double elapsed_time, float angle, float distance,
     float v_l, float v_r, float velocity_cmd,
     int cluster_size, float x, float y, float heading_deg)
 {
@@ -305,11 +305,11 @@ void log_data(float elapsed_time, float angle, float distance,
 }
 
 //Time
-float get_elapsed_time(struct timeval start_time) {
-    struct timeval current_time;
-    gettimeofday(&current_time, NULL);
-    return (current_time.tv_sec - start_time.tv_sec) +
-           (current_time.tv_usec - start_time.tv_usec) / 1e6f;
+
+double get_elapsed_time() {
+    struct timeval now;
+    gettimeofday(&now, NULL);
+    return (double)now.tv_sec + (double)now.tv_usec / 1e6;
 }
 
 
@@ -373,7 +373,8 @@ int main() {
         // If no full bin block, wait for more data
         if (!(bin_start && bin_end && bin_end > bin_start)) {
             if (!printed_wait_message) {
-                float elapsed_time = get_elapsed_time(start_time);
+                double elapsed_time = get_elapsed_time();
+
                // printf("[%.2fs] Waiting for complete <bin> block...\n", elapsed_time); //debugging
                 printed_wait_message = 1;
             }
@@ -495,21 +496,24 @@ int main() {
             search_angle -= delta_theta * 180.0f / M_PI;
             last_theta_global = theta_global;
 
-            float elapsed_time = get_elapsed_time(start_time);
-            printf("[%.2fs] Lost Centroid\n", elapsed_time);
+            double elapsed_time = get_elapsed_time();
+
+            printf("[%.10fs] Lost Centroid\n", elapsed_time);
             log_data(elapsed_time, angle_deg, dist, v_l, v_r, velocity_cmd,
                      -1, x_global, y_global, theta_global * 180.0f / M_PI);    
         }
          else {
             //centroids lost
             if (!centroid_lost_warning_printed) {
-                float elapsed_time = get_elapsed_time(start_time);
-                printf("[%.2fs] Centroid lost for more than 5 frames.\n", elapsed_time);
+                double elapsed_time = get_elapsed_time();
+
+                printf("[%.10fs] Centroid lost for more than 5 frames.\n", elapsed_time);
 
                 centroid_lost_warning_printed = 1;
             }
             if (log_index < LOG_SIZE) { //logs values
-                float elapsed_time = get_elapsed_time(start_time);
+                double elapsed_time = get_elapsed_time();
+
                 time_log[log_index] = elapsed_time;
                 distance_log[log_index] = -1;  // sentinel value
                 angle_log[log_index] = -1;
@@ -531,7 +535,8 @@ int main() {
         float xg = x_global + cosf(theta_global) * x_local - sinf(theta_global) * y_local;
         float yg = y_global + sinf(theta_global) * x_local + cosf(theta_global) * y_local; 
         
-        float elapsed_time = get_elapsed_time(start_time);
+        double elapsed_time = get_elapsed_time();
+
         //printf("[%.2fs] Robot=(%.2f, %.2f) θ=%.2f° | Centroid=(%.2f, %.2f)\n", elapsed_time, x_global, y_global, theta_global * 180.0f / M_PI, xg, yg); //Debugging
 
         trajectory[traj_count++] = (CentroidLog){ angle_deg, dist, xg, yg };
@@ -567,20 +572,22 @@ int main() {
         if (critical_now) {
             if (!critical_stop_active) {
                 send_command(cmd_fd, "motorcmds 0 0\n");
-                float elapsed_time = get_elapsed_time(start_time);
-                printf("[%.2fs] Emergency stop: obstacle within 15 cm at pose x=%.2f y=%.2f heading=%.2f°\n",
+                double elapsed_time = get_elapsed_time();
+
+                printf("[%.10fs] Emergency stop: obstacle within 15 cm at pose x=%.2f y=%.2f heading=%.2f°\n",
                     elapsed_time, x_global, y_global, theta_global * 180.0f / M_PI);
                 for (int i = 0; i < 3; i++) { u[i] = 0; e[i] = 0; }
             }
             critical_stop_active = 1;
-            float elapsed_time = get_elapsed_time(start_time);
-            printf("[%.2fs] Logging for critical stop.\n", elapsed_time);
+            double elapsed_time = get_elapsed_time();
+
+            printf("[%.10fs] Logging for critical stop.\n", elapsed_time);
             log_data(elapsed_time, last_valid_angle_deg, last_valid_distance, 0, 0, 0.0f,
                 selected_cluster_size, x_global, y_global, theta_global * 180.0f / M_PI);  
             continue;
         } else if (critical_stop_active) {
             // Scan is now clear, so exit stop state
-            printf("[%.2fs] Obstacle cleared, resuming.\n", get_elapsed_time(start_time));
+            printf("[%.10fs] Obstacle cleared, resuming.\n", get_elapsed_time());
             critical_stop_active = 0;
         }
 
