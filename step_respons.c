@@ -8,7 +8,7 @@
 
 #define ODO_LASER_PORT 24919  // Robot server port
 #define CMD_PORT 31001  // Port for motion commands
-#define SERVER_IP "192.38.66.89"  // Replace with your server's IP
+#define SERVER_IP "192.38.66.89"  // Server's IP
 #define LOG_DURATION 5  // Time in seconds to log data
 #define INTERVAL 500000  // 0.5 seconds in microseconds
 
