@@ -337,6 +337,7 @@ int main() {
 
     printf("Servers Started!\n");
     send_command(laser_fd, "scanpush cmd='scanget'\n");
+    send_command(cmd_fd, "log \"$odox\" \"$odoy\" \"$odoth\" \"$odovelocity\" \"$time\"\n");
 
     //initialize values
     char buffer[32768] = {0};
