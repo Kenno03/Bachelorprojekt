@@ -1,5 +1,5 @@
 # Bachelorprojekt
-This is the GitHub which contains all the data, video, MatLab Scripts, and C-code which were used in the Bachelor projekt 'Convoy Control of Mobile Robots' by Markus Kenno Hansen (8th of June 2025).
+This is the GitHub which contains all the data, video, MatLab Scripts, and C-code which were used in the Bachelor project 'Convoy Control of Mobile Robots' by Markus Kenno Hansen (8th of June 2025).
 ## Author
 Markus Kenno Hansen
 
