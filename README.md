@@ -35,3 +35,5 @@ Do this for each robot you want in the convoy.
 To extract the data files after each run, in the VS code environment, navigate to the log files, right click, and select "download".
 📌 If the conenctions are established correctly, in the VS code terminal, the program will print the initial coordinates of the robot (local coordinates). If not, it will state which connection were not estabished.
 ⚠️ Microsoft issued an update that made the SSH extension not work with some linux version. This can be a problem if the Linux version is not updated. Any VS version pre March 2025 should work, just make sure to turn off auto updates.
+
+To run any of the MATLab Scripts, rename the file-paths to yours.
